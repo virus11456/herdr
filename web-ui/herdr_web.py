@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import ssl
@@ -30,12 +31,14 @@ import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 try:
     import tomllib  # Python 3.11+
 except ModuleNotFoundError:  # pragma: no cover - depends on interpreter
     tomllib = None
+
+__version__ = "0.2.1"
 
 log = logging.getLogger("herdr-web")
 
@@ -84,6 +87,16 @@ FALLBACK_AGENT_KINDS = [
     "claude", "codex", "gemini", "opencode", "cursor", "copilot", "amp",
     "pi", "devin", "cline", "droid", "grok", "kimi", "kiro", "qwen",
 ]
+
+# The AI tools offered on the home screen: herdr agent kind -> how to install it.
+# None means there is no install command we can run for the user.
+AGENT_INSTALLERS = {
+    "claude": "curl -fsSL https://claude.ai/install.sh | bash",
+    "codex": None,  # chosen at runtime: npm or Homebrew
+    "grok": None,
+}
+AGENT_DETECT_TTL_SECONDS = 60
+MAX_DIR_ENTRIES = 500
 
 LIFECYCLE_EVENTS = [
     "workspace.created", "workspace.updated", "workspace.renamed",
@@ -260,7 +273,7 @@ class StateHub:
                 sock.sendall((json.dumps(request) + "\n").encode("utf-8"))
                 sock.settimeout(None)
                 with sock.makefile("rb") as reader:
-                    for line in reader:
+                    for _event in reader:
                         backoff = 1.0
                         self._dirty.set()
                         if self._stop.is_set():
@@ -407,6 +420,115 @@ def order_agent_kinds(kinds: list[str], preferred: list[str]) -> tuple[list[str]
     return chosen + [kind for kind in kinds if kind not in chosen], chosen
 
 
+def login_shell() -> str:
+    shell = os.environ.get("SHELL")
+    if shell and os.path.exists(shell):
+        return shell
+    for candidate in ("/bin/zsh", "/bin/bash", "/bin/sh"):
+        if os.path.exists(candidate):
+            return candidate
+    return "/bin/sh"
+
+
+def find_commands(names: list[str]) -> dict[str, str | None]:
+    """Locate commands the way a new herdr pane would: through the user's login shell.
+
+    Tools installed by npm, nvm or installers that edit ~/.zshrc are often missing
+    from this process's PATH, especially when it was started from Finder.
+    """
+    found: dict[str, str | None] = {name: shutil.which(name) for name in names}
+    script = "for a in %s; do printf '__herdr_web__ %%s=%%s\\n' \"$a\" \"$(command -v \"$a\" 2>/dev/null)\"; done" % " ".join(
+        shlex.quote(name) for name in names
+    )
+    try:
+        done = subprocess.run(
+            [login_shell(), "-lic", script],
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return found
+    for line in done.stdout.splitlines():
+        if not line.startswith("__herdr_web__ "):
+            continue
+        name, _, location = line[len("__herdr_web__ ") :].partition("=")
+        if name in found and location.strip():
+            found[name] = location.strip()
+    return found
+
+
+class AgentCatalog:
+    """Which of the home-screen AI tools are installed, cached for a minute."""
+
+    def __init__(self, kinds: list[str]):
+        self.kinds = kinds
+        self._lock = threading.Lock()
+        self._cached: dict | None = None
+        self._cached_at = 0.0
+
+    def status(self, refresh: bool = False) -> dict:
+        with self._lock:
+            if not refresh and self._cached and time.monotonic() - self._cached_at < AGENT_DETECT_TTL_SECONDS:
+                return self._cached
+        found = find_commands(self.kinds + ["npm", "brew"])
+        agents = []
+        for kind in self.kinds:
+            install = AGENT_INSTALLERS.get(kind)
+            if kind == "codex":
+                if found.get("npm"):
+                    install = "npm install -g @openai/codex"
+                elif found.get("brew"):
+                    install = "brew install --cask codex"
+            agents.append({"kind": kind, "installed": bool(found.get(kind)), "path": found.get(kind), "install": install})
+        result = {"agents": agents, "has_npm": bool(found.get("npm")), "has_brew": bool(found.get("brew"))}
+        with self._lock:
+            self._cached = result
+            self._cached_at = time.monotonic()
+        return result
+
+
+def list_directories(raw_path: str | None) -> dict:
+    """List the sub-folders of a folder, for the folder picker."""
+    home = Path.home()
+    target = Path(raw_path).expanduser() if raw_path else home
+    try:
+        target = target.resolve()
+        if not target.is_dir():
+            raise HerdrError("not_a_directory", f"{target} is not a folder")
+        names = []
+        with os.scandir(target) as entries:
+            for entry in entries:
+                if entry.name.startswith("."):
+                    continue
+                try:
+                    if entry.is_dir():
+                        names.append(entry.name)
+                except OSError:
+                    continue
+    except PermissionError as exc:
+        raise HerdrError("permission_denied", f"no permission to open {target}") from exc
+    except OSError as exc:
+        raise HerdrError("not_a_directory", str(exc)) from exc
+    names.sort(key=str.casefold)
+    shortcuts = [{"label": "主資料夾", "path": str(home)}]
+    for label, name in (("桌面", "Desktop"), ("文件", "Documents"), ("下載", "Downloads")):
+        candidate = home / name
+        if candidate.is_dir():
+            shortcuts.append({"label": label, "path": str(candidate)})
+    parent = str(target.parent) if target.parent != target else None
+    return {
+        "path": str(target),
+        "name": target.name or str(target),
+        "parent": parent,
+        "entries": names[:MAX_DIR_ENTRIES],
+        "truncated": len(names) > MAX_DIR_ENTRIES,
+        "shortcuts": shortcuts,
+    }
+
+
 class App:
     def __init__(self, args: argparse.Namespace, password: str):
         self.args = args
@@ -417,6 +539,7 @@ class App:
         self.config = ConfigStore(config_path, args.herdr_bin)
         preferred = [kind.strip() for kind in args.preferred_agents.split(",") if kind.strip()]
         self.agent_kinds, self.preferred_agents = order_agent_kinds(detect_agent_kinds(args.herdr_bin), preferred)
+        self.catalog = AgentCatalog(self.preferred_agents)
         self.secure_cookie = bool(args.tls_cert) or args.secure_cookie
 
     def start_herdr_server(self) -> None:
@@ -539,10 +662,12 @@ class Handler(BaseHTTPRequestHandler):
     # --- routing -----------------------------------------------------------
 
     def do_GET(self) -> None:
-        path = urlsplit(self.path).path
+        url = urlsplit(self.path)
+        path = url.path
+        query = parse_qs(url.query)
         if path.startswith("/api/"):
             if path == "/api/session":
-                self.send_json(HTTPStatus.OK, {"authenticated": self.authenticated()})
+                self.send_json(HTTPStatus.OK, {"authenticated": self.authenticated(), "version": __version__})
                 return
             if not self.authenticated():
                 self.send_error_json(HTTPStatus.UNAUTHORIZED, "unauthorized", "login required")
@@ -562,6 +687,13 @@ class Handler(BaseHTTPRequestHandler):
                         "session": self.app.args.session,
                     },
                 )
+            elif path == "/api/agents":
+                self.send_json(HTTPStatus.OK, self.app.catalog.status(refresh="refresh" in query))
+            elif path == "/api/dirs":
+                try:
+                    self.send_json(HTTPStatus.OK, list_directories((query.get("path") or [None])[0]))
+                except HerdrError as exc:
+                    self.send_error_json(HTTPStatus.BAD_REQUEST, exc.code, exc.message)
             elif path == "/api/config":
                 self.send_json(HTTPStatus.OK, self.app.config.read())
             elif path == "/api/config/default":

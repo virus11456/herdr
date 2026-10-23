@@ -4,13 +4,13 @@
 # On macOS this uses hdiutil. On Linux it needs mkfs.hfsplus (hfsprogs) plus the
 # hfsplus and dmg tools from libdmg-hfsplus, given as HFSPLUS_TOOL and DMG_TOOL.
 #
-# Usage: web-ui/macos/build-dmg.sh [output-dir]   (VERSION=0.1.0 by default)
+# Usage: web-ui/macos/build-dmg.sh [output-dir]   (VERSION defaults to herdr_web.py's __version__)
 set -eu
 
 here=$(cd "$(dirname "$0")" && pwd)
 web_ui=$(cd "$here/.." && pwd)
 out_dir=$(mkdir -p "${1:-$web_ui/dist}" && cd "${1:-$web_ui/dist}" && pwd)
-version="${VERSION:-0.1.0}"
+version="${VERSION:-$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$web_ui/herdr_web.py")}"
 app_name="Herdr Web"
 volume_name="Herdr Web"
 dmg_path="$out_dir/HerdrWeb-$version.dmg"

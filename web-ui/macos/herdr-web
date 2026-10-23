@@ -28,6 +28,15 @@ confirm() {
     /usr/bin/osascript -e "button returned of (display dialog \"$1\" with title \"$APP_TITLE\" buttons {\"取消\", \"$2\"} default button \"$2\")" 2>/dev/null
 }
 
+# Run from the DMG (or a translocated copy) and the dashboard breaks once the
+# disk image is ejected, so ask for the usual drag to Applications first.
+case "$RES" in
+    /Volumes/*|*/AppTranslocation/*)
+        alert "請先把 Herdr Web 拖到「應用程式」資料夾，再從「應用程式」打開。"
+        exit 1
+        ;;
+esac
+
 mkdir -p "$SUPPORT" "$(dirname "$LOG")"
 echo "--- $(date) launching" >> "$LOG"
 
@@ -54,9 +63,28 @@ if [ ! -s "$PASSWORD_FILE" ]; then
 fi
 PASSWORD="$(cat "$PASSWORD_FILE")"
 
-running() {
-    /usr/bin/curl -fsS --max-time 2 "${URL}api/session" 2>/dev/null | /usr/bin/grep -q authenticated
+BUNDLED_VERSION="$(/usr/bin/sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$RES/web-ui/herdr_web.py")"
+
+session_info() {
+    /usr/bin/curl -fsS --max-time 2 "${URL}api/session" 2>/dev/null
 }
+
+running() {
+    session_info | /usr/bin/grep -q authenticated
+}
+
+# After an app update an older dashboard may still be serving the port: replace it.
+if running && ! session_info | /usr/bin/grep -q "\"version\": \"$BUNDLED_VERSION\""; then
+    echo "replacing an older herdr-web with $BUNDLED_VERSION" >> "$LOG"
+    # Anchored so only a Python process running herdr_web.py matches, not a
+    # shell or editor whose arguments merely mention the file.
+    /usr/bin/pkill -f '^[^ ]*[Pp]ython[0-9.]* .*herdr_web\.py( |$)' >/dev/null 2>&1
+    tries=0
+    while running && [ "$tries" -lt 40 ]; do
+        tries=$((tries + 1))
+        sleep 0.25
+    done
+fi
 
 if ! running; then
     nohup "$PYTHON" "$RES/web-ui/herdr_web.py" \

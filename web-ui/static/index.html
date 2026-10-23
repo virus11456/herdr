@@ -15,7 +15,7 @@
     <form id="login-form" class="login-card">
       <img src="icon.svg" alt="" class="login-icon">
       <h1>herdr 控制台</h1>
-      <p class="muted">輸入啟動 herdr-web 時設定的密碼。</p>
+      <p class="muted">請輸入密碼。用 Mac App 打開的話會自動登入。</p>
       <label for="login-password">密碼</label>
       <input id="login-password" type="password" autocomplete="current-password" required>
       <button type="submit" class="primary">登入</button>
@@ -25,102 +25,184 @@
 
   <section id="app-view" hidden>
     <header class="topbar">
-      <div class="brand"><img src="icon.svg" alt="" class="brand-icon"><span>herdr</span></div>
+      <div class="brand"><img src="icon.svg" alt="" class="brand-icon"><span>herdr 控制台</span></div>
       <span id="conn-pill" class="pill">連線中</span>
       <nav class="tabs" aria-label="主選單">
-        <button type="button" data-view="dashboard" class="tab active">儀表板</button>
+        <button type="button" data-view="home" class="tab active">首頁</button>
         <button type="button" data-view="settings" class="tab">設定</button>
       </nav>
-      <button type="button" id="logout-btn" class="ghost small">登出</button>
     </header>
 
     <main>
-      <section id="dashboard-view">
+      <section id="home-view">
         <div id="offline-banner" class="banner" hidden>
           <div>
-            <strong>herdr server 沒有在執行</strong>
+            <strong>herdr 還沒有啟動</strong>
             <p id="offline-detail" class="muted"></p>
           </div>
-          <button type="button" id="start-server-btn" class="primary">啟動 herdr server</button>
+          <button type="button" id="start-server-btn" class="primary">啟動 herdr</button>
         </div>
 
-        <div class="toolbar">
-          <div id="summary" class="summary" aria-live="polite"></div>
-          <button type="button" id="new-workspace-btn" class="primary">＋ 新 workspace</button>
-        </div>
+        <section class="block">
+          <div class="block-head">
+            <div>
+              <h2>開始和 AI 一起工作</h2>
+              <p class="muted">選一個 AI，再選要讓它處理的資料夾。</p>
+            </div>
+            <button type="button" id="recheck-btn" class="ghost small">重新檢查</button>
+          </div>
+          <div id="ai-grid" class="ai-grid"></div>
+        </section>
 
-        <div id="workspaces" class="workspaces"></div>
-        <p id="empty-state" class="empty" hidden>還沒有 workspace。按「＋ 新 workspace」建立第一個。</p>
+        <section class="block">
+          <div class="block-head">
+            <h2>進行中</h2>
+            <div id="summary" class="summary" aria-live="polite"></div>
+          </div>
+          <div id="sessions" class="sessions"></div>
+          <p id="sessions-empty" class="empty" hidden>還沒有進行中的對話。從上面選一個 AI 開始。</p>
+          <p id="sessions-shells" class="muted small" hidden></p>
+        </section>
+
+        <details id="advanced" class="advanced">
+          <summary>進階檢視（工作區、分頁、視窗）</summary>
+          <div class="toolbar">
+            <p class="muted">herdr 原本的結構：一個工作區裡有分頁，分頁裡有一個或多個視窗。</p>
+            <button type="button" id="new-workspace-btn">＋ 新工作區</button>
+          </div>
+          <div id="workspaces" class="workspaces"></div>
+          <p id="empty-state" class="empty" hidden>還沒有工作區。</p>
+        </details>
       </section>
 
       <section id="settings-view" hidden>
-        <div class="settings-head">
-          <div>
-            <h2>config.toml</h2>
-            <p class="muted">路徑：<code id="config-path"></code></p>
-          </div>
+        <section class="block">
+          <h2>AI 工具</h2>
+          <p class="muted">這台電腦上有沒有安裝各家的 AI 工具。</p>
+          <div id="tool-list" class="tool-list"></div>
+        </section>
+
+        <section class="block">
+          <h2>通知</h2>
+          <p class="muted">AI 做完或需要你回覆時，用瀏覽器通知提醒你（需要開著這個分頁）。</p>
           <div class="button-row">
-            <button type="button" id="config-validate-btn">檢查語法</button>
-            <button type="button" id="config-save-btn" class="primary">儲存並套用</button>
-            <button type="button" id="config-restore-btn">還原上一版</button>
-            <button type="button" id="config-default-btn" class="ghost">顯示預設設定</button>
+            <button type="button" id="notify-btn">開啟通知</button>
+            <span id="notify-status" class="muted"></span>
           </div>
-        </div>
-        <div id="config-status" class="config-status" role="status"></div>
-        <textarea id="config-editor" class="editor" spellcheck="false" autocapitalize="off" autocomplete="off"
-          aria-label="config.toml 內容"></textarea>
-        <details id="config-default" class="default-config">
-          <summary>herdr 預設設定（唯讀參考）</summary>
-          <div class="button-row"><button type="button" id="config-copy-default-btn" class="small">複製到編輯器下方</button></div>
-          <pre id="config-default-text"></pre>
+        </section>
+
+        <section class="block">
+          <h2>常用資料夾</h2>
+          <p class="muted">開始新對話時，資料夾選擇視窗會先打開這裡。</p>
+          <div class="button-row">
+            <code id="last-folder" class="folder-code"></code>
+            <button type="button" id="clear-folder-btn" class="ghost small">清除</button>
+          </div>
+        </section>
+
+        <section class="block">
+          <h2>帳號</h2>
+          <div class="button-row"><button type="button" id="logout-btn">登出</button></div>
+        </section>
+
+        <details id="config-section" class="advanced">
+          <summary>進階：herdr 設定檔（一般不需要修改）</summary>
+          <div class="settings-head">
+            <p class="muted">路徑：<code id="config-path"></code></p>
+            <div class="button-row">
+              <button type="button" id="config-validate-btn">檢查語法</button>
+              <button type="button" id="config-save-btn" class="primary">儲存並套用</button>
+              <button type="button" id="config-restore-btn">還原上一版</button>
+              <button type="button" id="config-default-btn" class="ghost">顯示預設設定</button>
+            </div>
+          </div>
+          <div id="config-status" class="config-status" role="status"></div>
+          <textarea id="config-editor" class="editor" spellcheck="false" autocapitalize="off" autocomplete="off"
+            aria-label="config.toml 內容"></textarea>
+          <details id="config-default" class="default-config">
+            <summary>herdr 預設設定（唯讀參考）</summary>
+            <div class="button-row"><button type="button" id="config-copy-default-btn" class="small">複製到編輯器下方</button></div>
+            <pre id="config-default-text"></pre>
+          </details>
+          <p class="muted small-print">
+            存檔前會先檢查語法並備份上一版，存檔後自動套用。改壞了可以按「還原上一版」。
+          </p>
         </details>
-        <p class="muted small-print">
-          存檔前會先檢查 TOML 語法，並把舊版本備份成 <code>config.toml.web-backup</code>；
-          存檔後自動執行 <code>herdr server reload-config</code>。主題、側邊欄等介面設定只影響終端機裡的 herdr 畫面。
-        </p>
       </section>
     </main>
   </section>
 
-  <aside id="pane-panel" class="pane-panel" hidden aria-label="Pane 詳細">
+  <aside id="pane-panel" class="pane-panel" hidden aria-label="對話">
     <header class="pane-head">
-      <button type="button" id="pane-close-btn" class="ghost small" aria-label="關閉">←</button>
+      <button type="button" id="pane-close-btn" class="ghost small">← 返回</button>
       <div class="pane-title">
         <strong id="pane-title"></strong>
         <span id="pane-sub" class="muted"></span>
       </div>
       <span id="pane-status" class="status"></span>
     </header>
+    <div id="pane-attention" class="attention" hidden>
+      <p id="pane-attention-text"></p>
+    </div>
     <pre id="pane-output" class="pane-output" tabindex="0"></pre>
     <div class="pane-controls">
+      <div id="pane-answer" class="answer-row">
+        <span class="muted small">回答畫面上的選項：</span>
+        <div class="keys big" id="pane-answer-keys">
+          <button type="button" data-key="up" aria-label="上">↑</button>
+          <button type="button" data-key="down" aria-label="下">↓</button>
+          <button type="button" data-key="enter" class="primary">確認</button>
+          <button type="button" data-key="esc">取消</button>
+          <button type="button" data-key="1">1</button>
+          <button type="button" data-key="2">2</button>
+          <button type="button" data-key="3">3</button>
+        </div>
+      </div>
       <form id="pane-input-form" class="pane-input">
-        <textarea id="pane-input" rows="2" placeholder="輸入文字…" aria-label="送到 pane 的文字"></textarea>
+        <textarea id="pane-input" rows="2" placeholder="輸入文字…" aria-label="要送出的文字"></textarea>
         <button type="submit" class="primary" id="pane-send-btn">送出</button>
       </form>
-      <label class="check"><input type="checkbox" id="pane-enter" checked> 送出後按 Enter</label>
-      <div class="keys" id="pane-keys">
-        <button type="button" data-key="enter">Enter</button>
-        <button type="button" data-key="esc">Esc</button>
-        <button type="button" data-key="ctrl+c">Ctrl+C</button>
-        <button type="button" data-key="up">↑</button>
-        <button type="button" data-key="down">↓</button>
-        <button type="button" data-key="tab">Tab</button>
-        <button type="button" data-key="shift+tab">⇧Tab</button>
-        <button type="button" data-key="y">y</button>
-        <button type="button" data-key="n">n</button>
-        <button type="button" data-key="1">1</button>
-        <button type="button" data-key="2">2</button>
-        <button type="button" data-key="3">3</button>
-      </div>
-      <div class="button-row pane-actions">
-        <button type="button" id="pane-start-agent-btn">啟動 agent</button>
-        <button type="button" id="pane-split-right-btn">向右分割</button>
-        <button type="button" id="pane-split-down-btn">向下分割</button>
-        <button type="button" id="pane-rename-btn">重新命名</button>
-        <button type="button" id="pane-kill-btn" class="danger">關閉 pane</button>
-      </div>
+      <details class="more">
+        <summary>更多操作</summary>
+        <label class="check"><input type="checkbox" id="pane-enter" checked> 送出後自動按 Enter</label>
+        <div class="keys" id="pane-keys">
+          <button type="button" data-key="enter">Enter</button>
+          <button type="button" data-key="esc">Esc</button>
+          <button type="button" data-key="ctrl+c">中斷 (Ctrl+C)</button>
+          <button type="button" data-key="up">↑</button>
+          <button type="button" data-key="down">↓</button>
+          <button type="button" data-key="tab">Tab</button>
+          <button type="button" data-key="shift+tab">⇧Tab</button>
+          <button type="button" data-key="y">y</button>
+          <button type="button" data-key="n">n</button>
+        </div>
+        <div class="button-row pane-actions">
+          <button type="button" id="pane-start-agent-btn">在這裡啟動 AI</button>
+          <button type="button" id="pane-split-right-btn">左右分割</button>
+          <button type="button" id="pane-split-down-btn">上下分割</button>
+          <button type="button" id="pane-rename-btn">重新命名</button>
+          <button type="button" id="pane-kill-btn" class="danger">結束這個對話</button>
+        </div>
+      </details>
     </div>
   </aside>
+
+  <dialog id="folder-dialog" class="folder-dialog">
+    <form method="dialog" id="folder-form">
+      <h3 id="folder-title">選擇資料夾</h3>
+      <div id="folder-shortcuts" class="chips"></div>
+      <div class="folder-current">
+        <button type="button" id="folder-up-btn" class="small" aria-label="上一層">↑ 上一層</button>
+        <code id="folder-path"></code>
+      </div>
+      <ul id="folder-list" class="folder-list"></ul>
+      <p id="folder-error" class="error-text"></p>
+      <div class="button-row end">
+        <button value="cancel" type="submit" class="ghost" formnovalidate>取消</button>
+        <button value="ok" type="submit" class="primary" id="folder-ok">在這裡開始</button>
+      </div>
+    </form>
+  </dialog>
 
   <dialog id="form-dialog">
     <form method="dialog" id="form-dialog-form">
@@ -128,7 +210,7 @@
       <p id="form-dialog-text" class="muted"></p>
       <div id="form-dialog-fields"></div>
       <div class="button-row end">
-        <button value="cancel" type="submit" class="ghost" formnovalidate>取消</button>
+        <button value="cancel" type="submit" class="ghost" formnovalidate id="form-dialog-cancel">取消</button>
         <button value="ok" type="submit" class="primary" id="form-dialog-ok">確定</button>
       </div>
     </form>

@@ -1,41 +1,58 @@
 "use strict";
 
+/* Plain-language labels: the home screen never shows herdr's internal terms. */
 const STATUS_LABELS = {
-  working: "工作中",
-  blocked: "等你回應",
-  done: "完成",
-  idle: "閒置",
-  unknown: "未偵測",
+  working: "正在工作…",
+  blocked: "等你回覆",
+  done: "完成了",
+  idle: "待命中",
+  unknown: "終端機",
 };
 const STATUS_ORDER = ["blocked", "working", "done", "idle"];
+const STATUS_RANK = { blocked: 0, working: 1, done: 2, idle: 3, unknown: 4 };
+
+/* The AI tools on the home screen, keyed by herdr agent kind. */
+const AI_TOOLS = {
+  claude: { kind: "claude", name: "Claude", product: "Claude Code", account: "Claude 帳號", command: "claude", logo: "C", tone: "claude" },
+  codex: { kind: "codex", name: "ChatGPT", product: "Codex", account: "ChatGPT 帳號", command: "codex", logo: "G", tone: "chatgpt" },
+  grok: { kind: "grok", name: "Grok", product: "Grok CLI", account: "Grok 帳號", command: "grok", logo: "X", tone: "grok" },
+};
+
+/* Names for the agent picker in the advanced view. */
 const AGENT_LABELS = {
-  claude: "Claude Code（Claude 訂閱）",
-  codex: "Codex（ChatGPT 訂閱）",
-  grok: "Grok CLI（Grok 訂閱）",
+  claude: "Claude（Claude Code）",
+  codex: "ChatGPT（Codex）",
+  grok: "Grok（Grok CLI）",
   gemini: "Gemini CLI",
   copilot: "GitHub Copilot CLI",
   cursor: "Cursor Agent CLI",
   opencode: "OpenCode",
 };
+
 const OUTPUT_POLL_MS = 1500;
 const OUTPUT_LINES = 400;
+const LAST_FOLDER_KEY = "herdr-web:last-folder";
 
 const state = {
   online: false,
   error: null,
   snapshot: null,
   meta: { agent_kinds: [], preferred_agents: [] },
-  view: "dashboard",
+  tools: null,
+  view: "home",
   openPaneId: null,
+  openPaneSeen: false,
   lastStatuses: new Map(),
   events: null,
   outputTimer: null,
   outputInFlight: false,
   configLoaded: false,
   configDirty: false,
+  folder: null,
 };
 
 const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /* ---------- DOM helpers ---------- */
 
@@ -62,6 +79,29 @@ function toast(message, kind = "info") {
   setTimeout(() => el.remove(), kind === "error" ? 6000 : 3500);
 }
 
+function basename(path) {
+  if (!path) return "";
+  const trimmed = path.replace(/\/+$/, "");
+  return trimmed.slice(trimmed.lastIndexOf("/") + 1) || trimmed || "/";
+}
+
+function storageGet(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch (err) {
+    return null;
+  }
+}
+
+function storageSet(key, value) {
+  try {
+    if (value === null) localStorage.removeItem(key);
+    else localStorage.setItem(key, value);
+  } catch (err) {
+    /* private mode: just don't remember */
+  }
+}
+
 /* ---------- API ---------- */
 
 class ApiError extends Error {
@@ -82,7 +122,7 @@ async function api(path, { method = "GET", body } = {}) {
   try {
     response = await fetch(path, options);
   } catch (err) {
-    throw new ApiError("network", "無法連到 herdr-web，請檢查網路。", 0);
+    throw new ApiError("network", "連不到 herdr 控制台。請確認 Herdr Web 有在執行。", 0);
   }
   let data = {};
   try {
@@ -116,7 +156,7 @@ async function run(action, successMessage) {
 
 /* ---------- dialogs ---------- */
 
-function openForm({ title, text = "", fields = [], okText = "確定", danger = false }) {
+function openForm({ title, text = "", fields = [], okText = "確定", cancelText = "取消", danger = false }) {
   const dialog = $("form-dialog");
   const container = $("form-dialog-fields");
   $("form-dialog-title").textContent = title;
@@ -125,6 +165,9 @@ function openForm({ title, text = "", fields = [], okText = "確定", danger = f
   const ok = $("form-dialog-ok");
   ok.textContent = okText;
   ok.className = danger ? "danger" : "primary";
+  const cancel = $("form-dialog-cancel");
+  cancel.textContent = cancelText || "";
+  cancel.hidden = !cancelText;
   container.replaceChildren();
   const inputs = {};
   for (const field of fields) {
@@ -177,17 +220,97 @@ function openForm({ title, text = "", fields = [], okText = "確定", danger = f
   });
 }
 
-async function confirmAction(title, text, okText) {
-  return (await openForm({ title, text, okText, danger: true })) !== null;
+async function confirmAction(title, text, okText, danger = true) {
+  return (await openForm({ title, text, okText, danger })) !== null;
 }
 
-function agentOptions() {
-  const preferred = new Set(state.meta.preferred_agents || []);
-  return (state.meta.agent_kinds || []).map((kind) => ({
-    value: kind,
-    label: AGENT_LABELS[kind] || kind,
-    group: preferred.size ? (preferred.has(kind) ? "你的訂閱" : "其他 agent") : undefined,
-  }));
+async function inform(title, text) {
+  await openForm({ title, text, okText: "知道了", cancelText: "" });
+}
+
+/* ---------- folder picker ---------- */
+
+function recentFolders() {
+  const seen = new Set();
+  const folders = [];
+  for (const pane of state.snapshot?.panes || []) {
+    const cwd = pane.foreground_cwd || pane.cwd;
+    if (cwd && !seen.has(cwd)) {
+      seen.add(cwd);
+      folders.push(cwd);
+    }
+  }
+  return folders.slice(0, 4);
+}
+
+async function showFolder(path) {
+  $("folder-error").textContent = "";
+  let data;
+  try {
+    data = await api(`/api/dirs${path ? `?path=${encodeURIComponent(path)}` : ""}`);
+  } catch (err) {
+    // A remembered folder may have been moved or deleted: start from home instead.
+    if (path && !state.folder) return showFolder(null);
+    $("folder-error").textContent = `打不開這個資料夾：${err.message}`;
+    return;
+  }
+  $("folder-ok").disabled = false;
+  state.folder = data;
+  $("folder-path").textContent = data.path;
+  $("folder-up-btn").disabled = !data.parent;
+  $("folder-ok").textContent = `在「${data.name}」開始`;
+
+  const shortcuts = $("folder-shortcuts");
+  shortcuts.replaceChildren();
+  const chips = [...data.shortcuts];
+  for (const folder of recentFolders()) {
+    if (!chips.some((chip) => chip.path === folder)) chips.push({ label: `最近：${basename(folder)}`, path: folder });
+  }
+  for (const chip of chips) {
+    shortcuts.append(
+      h("button", {
+        type: "button",
+        class: `chip${chip.path === data.path ? " active" : ""}`,
+        text: chip.label,
+        title: chip.path,
+        onclick: () => showFolder(chip.path),
+      }),
+    );
+  }
+
+  const list = $("folder-list");
+  list.replaceChildren();
+  if (!data.entries.length) list.append(h("li", { class: "muted folder-empty", text: "這裡沒有其他資料夾" }));
+  for (const name of data.entries) {
+    list.append(
+      h(
+        "li",
+        {},
+        h("button", { type: "button", class: "folder-item", onclick: () => showFolder(`${data.path.replace(/\/$/, "")}/${name}`) }, h("span", { class: "folder-icon", text: "📁" }), name),
+      ),
+    );
+  }
+  list.scrollTop = 0;
+}
+
+function pickFolder(title) {
+  const dialog = $("folder-dialog");
+  $("folder-title").textContent = title;
+  state.folder = null;
+  $("folder-ok").disabled = true;
+  $("folder-path").textContent = "讀取中…";
+  showFolder(storageGet(LAST_FOLDER_KEY));
+  return new Promise((resolve) => {
+    const onClose = () => {
+      dialog.removeEventListener("close", onClose);
+      if (dialog.returnValue !== "ok" || !state.folder) return resolve(null);
+      storageSet(LAST_FOLDER_KEY, state.folder.path);
+      resolve(state.folder.path);
+    };
+    dialog.addEventListener("close", onClose);
+    dialog.returnValue = "";
+    dialog.showModal();
+  });
 }
 
 /* ---------- snapshot helpers ---------- */
@@ -200,25 +323,39 @@ function paneById(paneId) {
   return (state.snapshot?.panes || []).find((pane) => pane.pane_id === paneId) || null;
 }
 
+function toolForPane(pane) {
+  return AI_TOOLS[pane.agent] || null;
+}
+
 function paneName(pane) {
+  const tool = toolForPane(pane);
+  if (pane.label) return pane.label;
+  if (tool) return tool.name;
   const agent = agentForPane(pane.pane_id);
-  return (
-    agent?.name ||
-    pane.label ||
-    pane.display_agent ||
-    pane.terminal_title_stripped ||
-    pane.title ||
-    pane.pane_id
-  );
+  return agent?.name || pane.display_agent || pane.terminal_title_stripped || pane.title || "終端機";
+}
+
+function paneFolder(pane) {
+  return pane.foreground_cwd || pane.cwd || "";
 }
 
 function paneMeta(pane) {
   const parts = [];
   if (pane.display_agent || pane.agent) parts.push(pane.display_agent || pane.agent);
-  const cwd = pane.foreground_cwd || pane.cwd;
+  const cwd = paneFolder(pane);
   if (cwd) parts.push(cwd);
   parts.push(pane.pane_id);
   return parts.join(" · ");
+}
+
+function statusLabel(pane) {
+  if (pane.agent_status === "unknown") return pane.agent ? "偵測中" : STATUS_LABELS.unknown;
+  return STATUS_LABELS[pane.agent_status] || STATUS_LABELS.idle;
+}
+
+function statusBadge(pane) {
+  const value = STATUS_LABELS[pane.agent_status] ? pane.agent_status : "unknown";
+  return h("span", { class: `status ${value}`, text: statusLabel(pane) });
 }
 
 function orderedPanes(tabId) {
@@ -230,20 +367,168 @@ function orderedPanes(tabId) {
   return panes.sort((a, b) => (order.get(a.pane_id) ?? 99) - (order.get(b.pane_id) ?? 99));
 }
 
-function statusBadge(status) {
-  const value = STATUS_LABELS[status] ? status : "unknown";
-  return h("span", { class: `status ${value}`, text: STATUS_LABELS[value] });
+function agentOptions() {
+  const preferred = new Set(state.meta.preferred_agents || []);
+  return (state.meta.agent_kinds || []).map((kind) => ({
+    value: kind,
+    label: AGENT_LABELS[kind] || kind,
+    group: preferred.size ? (preferred.has(kind) ? "你的訂閱" : "其他") : undefined,
+  }));
 }
 
-/* ---------- dashboard rendering ---------- */
+/* ---------- home: AI cards ---------- */
+
+function toolStatus(kind) {
+  return state.tools?.agents.find((agent) => agent.kind === kind) || null;
+}
+
+function renderAiCards() {
+  const grid = $("ai-grid");
+  grid.replaceChildren();
+  const kinds = state.meta.preferred_agents?.length ? state.meta.preferred_agents : Object.keys(AI_TOOLS);
+  for (const kind of kinds) {
+    const tool = AI_TOOLS[kind] || { name: kind, product: kind, logo: kind[0]?.toUpperCase() || "?", tone: "other" };
+    const status = toolStatus(kind);
+    let line;
+    let lineClass = "muted";
+    if (!state.tools) line = "檢查中…";
+    else if (status?.installed) {
+      line = "可以開始";
+      lineClass = "ok";
+    } else if (status?.install) {
+      line = "還沒安裝・點這裡安裝";
+      lineClass = "warn";
+    } else {
+      line = "還沒安裝";
+      lineClass = "warn";
+    }
+    grid.append(
+      h(
+        "button",
+        { type: "button", class: `ai-card ${tool.tone}`, onclick: () => onAiCard(kind), disabled: !state.online },
+        h("span", { class: `ai-logo ${tool.tone}`, text: tool.logo, "aria-hidden": "true" }),
+        h("span", { class: "ai-text" }, h("strong", { text: tool.name }), h("span", { class: "muted small", text: tool.product }), h("span", { class: `ai-line ${lineClass}`, text: line })),
+      ),
+    );
+  }
+}
+
+async function loadTools(refresh = false) {
+  try {
+    state.tools = await api(`/api/agents${refresh ? "?refresh=1" : ""}`);
+  } catch (err) {
+    state.tools = null;
+    if (err.status !== 401) toast(err.message, "error");
+  }
+  renderAiCards();
+  renderToolList();
+}
+
+async function onAiCard(kind) {
+  const tool = AI_TOOLS[kind] || { name: kind, product: kind, account: "帳號", command: kind };
+  const status = toolStatus(kind);
+  if (!state.tools) return;
+  if (!status?.installed) return offerInstall(kind, tool, status);
+  const folder = await pickFolder(`要讓 ${tool.name} 在哪個資料夾工作？`);
+  if (!folder) return;
+  await startSession(tool, folder);
+}
+
+/* Claude, ChatGPT and Grok are started by typing their command, so a first-run
+   login or setup screen still shows up. Other herdr agents go through
+   agent.start, which knows each one's executable. */
+async function launchInPane(paneId, kind) {
+  const tool = AI_TOOLS[kind];
+  if (tool) {
+    await call("pane.send_text", { pane_id: paneId, text: tool.command });
+    await call("pane.send_keys", { pane_id: paneId, keys: ["enter"] });
+  } else {
+    await call("agent.start", { pane_id: paneId, kind, name: AGENT_LABELS[kind] || kind, timeout_ms: 30000 });
+  }
+}
+
+async function startSession(tool, folder) {
+  try {
+    const result = await call("workspace.create", { label: `${tool.name} · ${basename(folder)}`, cwd: folder, focus: false });
+    const paneId = result?.root_pane?.pane_id;
+    if (!paneId) throw new Error("herdr 沒有回傳新的視窗");
+    openPane(paneId);
+    $("pane-output").textContent = `正在啟動 ${tool.name}…`;
+    // Give the new shell a moment to show its prompt before typing the command.
+    await sleep(900);
+    await launchInPane(paneId, tool.kind);
+    setTimeout(() => refreshOutput(true), 800);
+  } catch (err) {
+    toast(err.message, "error");
+  }
+}
+
+async function offerInstall(kind, tool, status) {
+  if (!status?.install) {
+    await inform(
+      `${tool.name} 還沒安裝`,
+      kind === "grok"
+        ? "Grok CLI 需要依照 xAI 的官方說明安裝。裝好之後回到這裡按「重新檢查」。"
+        : kind === "codex"
+          ? "安裝 Codex 需要先安裝 Node.js（nodejs.org）。裝好之後回到這裡按「重新檢查」。"
+          : `${tool.product} 需要先安裝。裝好之後回到這裡按「重新檢查」。`,
+    );
+    return;
+  }
+  const ok = await confirmAction(
+    `安裝 ${tool.product}？`,
+    `會打開一個視窗顯示安裝過程（指令：${status.install}）。裝好後第一次使用時，畫面會引導你登入${tool.account}。`,
+    "安裝",
+    false,
+  );
+  if (!ok) return;
+  const home = (await run(() => api("/api/dirs")))?.shortcuts?.[0]?.path;
+  const result = await run(() => call("workspace.create", { label: `安裝 ${tool.name}`, cwd: home || undefined, focus: false }));
+  const paneId = result?.root_pane?.pane_id;
+  if (!paneId) return;
+  openPane(paneId);
+  await sleep(900);
+  await run(() => call("pane.send_text", { pane_id: paneId, text: status.install }));
+  await run(() => call("pane.send_keys", { pane_id: paneId, keys: ["enter"] }));
+  toast("安裝完成後，按「← 返回」再按「重新檢查」");
+}
+
+/* ---------- home: sessions ---------- */
+
+function renderSessions() {
+  const root = $("sessions");
+  root.replaceChildren();
+  const all = state.snapshot?.panes || [];
+  // The home screen lists AI conversations; plain terminals live in the advanced view.
+  const panes = all.filter((pane) => pane.agent).sort(
+    (a, b) => (STATUS_RANK[a.agent_status] ?? 9) - (STATUS_RANK[b.agent_status] ?? 9),
+  );
+  const shells = all.length - panes.length;
+  $("sessions-empty").hidden = !state.online || panes.length > 0;
+  $("sessions-shells").hidden = shells === 0;
+  $("sessions-shells").textContent = `另外還有 ${shells} 個一般終端機視窗，在下方「進階檢視」裡。`;
+  for (const pane of panes) {
+    const tool = toolForPane(pane);
+    root.append(
+      h(
+        "button",
+        { type: "button", class: `session-card ${pane.agent_status}`, onclick: () => openPane(pane.pane_id) },
+        h("span", { class: `ai-logo small ${tool ? tool.tone : "shell"}`, text: tool ? tool.logo : ">_", "aria-hidden": "true" }),
+        h("span", { class: "session-main" }, h("strong", { text: paneName(pane) }), h("span", { class: "muted small", text: `📁 ${basename(paneFolder(pane))}` })),
+        h("span", { class: "session-status" }, h("span", { class: `dot ${pane.agent_status}` }), statusBadge(pane)),
+      ),
+    );
+  }
+}
 
 function renderConnection() {
   const pill = $("conn-pill");
   if (state.online) {
-    pill.textContent = `herdr ${state.snapshot?.version || ""}`.trim();
+    pill.textContent = "已連線";
+    pill.title = `herdr ${state.snapshot?.version || ""}`;
     pill.className = "pill online";
   } else {
-    pill.textContent = "離線";
+    pill.textContent = "未連線";
     pill.className = "pill offline";
   }
   $("offline-banner").hidden = state.online;
@@ -255,24 +540,16 @@ function renderSummary() {
   summary.replaceChildren();
   const panes = state.snapshot?.panes || [];
   const counts = {};
-  for (const pane of panes) counts[pane.agent_status] = (counts[pane.agent_status] || 0) + 1;
+  for (const pane of panes) if (pane.agent) counts[pane.agent_status] = (counts[pane.agent_status] || 0) + 1;
   for (const status of STATUS_ORDER) {
     if (!counts[status]) continue;
-    summary.append(h("span", { class: "chip" }, h("span", { class: `dot ${status}` }), `${STATUS_LABELS[status]} ${counts[status]}`));
-  }
-  if ("Notification" in window && window.isSecureContext && Notification.permission === "default") {
-    summary.append(
-      h("button", {
-        type: "button",
-        class: "small ghost",
-        text: "開啟通知",
-        onclick: () => Notification.requestPermission().then(renderSummary),
-      }),
-    );
+    summary.append(h("span", { class: "chip static" }, h("span", { class: `dot ${status}` }), `${STATUS_LABELS[status]} ${counts[status]}`));
   }
   const blocked = counts.blocked || 0;
   document.title = blocked ? `(${blocked}) herdr 控制台` : "herdr 控制台";
 }
+
+/* ---------- advanced tree ---------- */
 
 function renderWorkspaces() {
   const root = $("workspaces");
@@ -293,9 +570,9 @@ function renderWorkspaces() {
         h(
           "div",
           { class: "actions" },
-          h("button", { type: "button", class: "icon ghost", title: "新增 tab", "aria-label": "新增 tab", text: "＋", onclick: () => createTab(ws) }),
-          h("button", { type: "button", class: "icon ghost", title: "重新命名", "aria-label": "重新命名 workspace", text: "✎", onclick: () => renameWorkspace(ws) }),
-          h("button", { type: "button", class: "icon ghost danger", title: "關閉 workspace", "aria-label": "關閉 workspace", text: "✕", onclick: () => closeWorkspace(ws) }),
+          h("button", { type: "button", class: "icon ghost", title: "新增分頁", "aria-label": "新增分頁", text: "＋", onclick: () => createTab(ws) }),
+          h("button", { type: "button", class: "icon ghost", title: "重新命名", "aria-label": "重新命名工作區", text: "✎", onclick: () => renameWorkspace(ws) }),
+          h("button", { type: "button", class: "icon ghost danger", title: "關閉工作區", "aria-label": "關閉工作區", text: "✕", onclick: () => closeWorkspace(ws) }),
         ),
       ),
     );
@@ -304,12 +581,12 @@ function renderWorkspaces() {
         h(
           "div",
           { class: "tab-head" },
-          h("span", { class: "name", text: tab.label && tab.label !== String(tab.number) ? `Tab ${tab.number} · ${tab.label}` : `Tab ${tab.number}` }),
+          h("span", { class: "name", text: tab.label && tab.label !== String(tab.number) ? `分頁 ${tab.number} · ${tab.label}` : `分頁 ${tab.number}` }),
           h(
             "div",
             { class: "actions" },
-            h("button", { type: "button", class: "icon ghost", title: "重新命名 tab", "aria-label": "重新命名 tab", text: "✎", onclick: () => renameTab(tab) }),
-            h("button", { type: "button", class: "icon ghost danger", title: "關閉 tab", "aria-label": "關閉 tab", text: "✕", onclick: () => closeTab(tab) }),
+            h("button", { type: "button", class: "icon ghost", title: "重新命名分頁", "aria-label": "重新命名分頁", text: "✎", onclick: () => renameTab(tab) }),
+            h("button", { type: "button", class: "icon ghost danger", title: "關閉分頁", "aria-label": "關閉分頁", text: "✕", onclick: () => closeTab(tab) }),
           ),
         ),
       );
@@ -321,14 +598,10 @@ function renderWorkspaces() {
             {},
             h(
               "button",
-              {
-                type: "button",
-                class: `pane-row ${pane.agent_status}${pane.focused ? " focused" : ""}`,
-                onclick: () => openPane(pane.pane_id),
-              },
+              { type: "button", class: `pane-row ${pane.agent_status}${pane.focused ? " focused" : ""}`, onclick: () => openPane(pane.pane_id) },
               h("span", { class: `dot ${pane.agent_status}` }),
               h("span", { class: "pane-main" }, h("span", { class: "pane-name", text: paneName(pane) }), h("span", { class: "pane-meta", text: paneMeta(pane) })),
-              statusBadge(pane.agent_status),
+              statusBadge(pane),
             ),
           ),
         );
@@ -339,6 +612,65 @@ function renderWorkspaces() {
   }
 }
 
+async function createWorkspace() {
+  const values = await openForm({
+    title: "新工作區",
+    fields: [
+      { name: "label", label: "名稱（可留空）" },
+      { name: "kind", label: "建立後啟動", type: "select", value: "", options: [{ value: "", label: "只開終端機" }, ...agentOptions()] },
+    ],
+    okText: "下一步：選資料夾",
+  });
+  if (!values) return;
+  const folder = await pickFolder("新工作區要用哪個資料夾？");
+  if (!folder) return;
+  if (values.kind) {
+    const tool = AI_TOOLS[values.kind] || { kind: values.kind, name: AGENT_LABELS[values.kind] || values.kind };
+    return startSession(tool, folder);
+  }
+  const params = { cwd: folder, focus: false };
+  if (values.label) params.label = values.label;
+  await run(() => call("workspace.create", params), "已建立工作區");
+}
+
+async function createTab(ws) {
+  const values = await openForm({ title: `在「${ws.label}」新增分頁`, fields: [{ name: "label", label: "分頁名稱（可留空）" }], okText: "建立" });
+  if (!values) return;
+  const params = { workspace_id: ws.workspace_id, focus: false };
+  if (values.label) params.label = values.label;
+  await run(() => call("tab.create", params), "已新增分頁");
+}
+
+async function renameWorkspace(ws) {
+  const values = await openForm({ title: "重新命名工作區", fields: [{ name: "label", label: "新名稱", value: ws.label, required: true }] });
+  if (!values || !values.label) return;
+  await run(() => call("workspace.rename", { workspace_id: ws.workspace_id, label: values.label }));
+}
+
+async function closeWorkspace(ws) {
+  if (!(await confirmAction("關閉工作區？", `「${ws.label}」裡所有的視窗和正在跑的 AI 都會被關掉。`, "關閉"))) return;
+  try {
+    await call("workspace.close", { workspace_id: ws.workspace_id });
+  } catch (err) {
+    if (err.code !== "workspace_group_close_required") return toast(err.message, "error");
+    if (!(await confirmAction("一起關閉？", "這個工作區還有相關的工作區，要全部一起關閉嗎？", "全部關閉"))) return;
+    await run(() => call("workspace.close", { workspace_id: ws.workspace_id, close_group: true }));
+  }
+}
+
+async function renameTab(tab) {
+  const values = await openForm({ title: "重新命名分頁", fields: [{ name: "label", label: "新名稱", value: tab.label, required: true }] });
+  if (!values || !values.label) return;
+  await run(() => call("tab.rename", { tab_id: tab.tab_id, label: values.label }));
+}
+
+async function closeTab(tab) {
+  if (!(await confirmAction("關閉分頁？", `分頁「${tab.label}」裡的視窗都會被關掉。`, "關閉"))) return;
+  await run(() => call("tab.close", { tab_id: tab.tab_id }));
+}
+
+/* ---------- state updates ---------- */
+
 function notifyTransitions() {
   const panes = state.snapshot?.panes || [];
   const next = new Map();
@@ -347,7 +679,7 @@ function notifyTransitions() {
     next.set(pane.pane_id, pane.agent_status);
     if (previous === undefined || previous === pane.agent_status) continue;
     if (pane.agent_status === "blocked" || pane.agent_status === "done") {
-      const message = `${paneName(pane)}：${STATUS_LABELS[pane.agent_status]}`;
+      const message = `${paneName(pane)}（${basename(paneFolder(pane))}）：${STATUS_LABELS[pane.agent_status]}`;
       toast(message);
       if ("Notification" in window && Notification.permission === "granted" && document.hidden) {
         try {
@@ -362,104 +694,58 @@ function notifyTransitions() {
 }
 
 function applyState(payload) {
+  const wasOnline = state.online;
   state.online = Boolean(payload.online);
   state.error = payload.error;
   state.snapshot = payload.snapshot || (state.online ? state.snapshot : null);
   renderConnection();
   renderSummary();
+  renderSessions();
   renderWorkspaces();
+  if (state.online !== wasOnline) renderAiCards();
   if (state.online) notifyTransitions();
   if (state.openPaneId) {
     const pane = paneById(state.openPaneId);
-    if (pane) renderPaneHeader(pane);
-    else if (state.online) {
-      toast("這個 pane 已經關閉了");
+    if (pane) {
+      state.openPaneSeen = true;
+      renderPaneHeader(pane);
+    } else if (state.online && state.openPaneSeen) {
+      // Only a pane we have already seen can have ended; a brand-new one may
+      // simply be missing from a snapshot taken just before it was created.
+      toast("這個對話已經結束了");
       closePane();
     }
   }
 }
 
-/* ---------- workspace / tab actions ---------- */
-
-async function createWorkspace() {
-  const values = await openForm({
-    title: "新 workspace",
-    fields: [
-      { name: "label", label: "名稱", placeholder: "例如 api、frontend" },
-      { name: "cwd", label: "工作目錄（絕對路徑，留空用預設）", placeholder: "/home/me/project" },
-      {
-        name: "kind",
-        label: "建立後啟動 agent",
-        type: "select",
-        value: "",
-        options: [{ value: "", label: "不要，只開 shell" }, ...agentOptions()],
-      },
-    ],
-    okText: "建立",
-  });
-  if (!values) return;
-  const params = { focus: false };
-  if (values.label) params.label = values.label;
-  if (values.cwd) params.cwd = values.cwd;
-  const result = await run(() => call("workspace.create", params), "已建立 workspace");
-  const paneId = result?.root_pane?.pane_id;
-  if (paneId && values.kind) {
-    await startAgentInPane(paneId, values.kind, values.label || values.kind, true);
-  }
-}
-
-async function createTab(ws) {
-  const values = await openForm({ title: `在 ${ws.label} 新增 tab`, fields: [{ name: "label", label: "Tab 名稱（可留空）" }], okText: "建立" });
-  if (!values) return;
-  const params = { workspace_id: ws.workspace_id, focus: false };
-  if (values.label) params.label = values.label;
-  await run(() => call("tab.create", params), "已新增 tab");
-}
-
-async function renameWorkspace(ws) {
-  const values = await openForm({ title: "重新命名 workspace", fields: [{ name: "label", label: "新名稱", value: ws.label, required: true }] });
-  if (!values || !values.label) return;
-  await run(() => call("workspace.rename", { workspace_id: ws.workspace_id, label: values.label }));
-}
-
-async function closeWorkspace(ws) {
-  if (!(await confirmAction("關閉 workspace？", `「${ws.label}」裡的所有 tab、pane 和正在跑的 agent 都會被關掉。`, "關閉"))) return;
-  try {
-    await call("workspace.close", { workspace_id: ws.workspace_id });
-  } catch (err) {
-    if (err.code !== "workspace_group_close_required") return toast(err.message, "error");
-    if (!(await confirmAction("一起關閉 worktree？", "這個 workspace 還有連結的 worktree workspace，要全部一起關閉嗎？", "全部關閉"))) return;
-    await run(() => call("workspace.close", { workspace_id: ws.workspace_id, close_group: true }));
-  }
-}
-
-async function renameTab(tab) {
-  const values = await openForm({ title: "重新命名 tab", fields: [{ name: "label", label: "新名稱", value: tab.label, required: true }] });
-  if (!values || !values.label) return;
-  await run(() => call("tab.rename", { tab_id: tab.tab_id, label: values.label }));
-}
-
-async function closeTab(tab) {
-  if (!(await confirmAction("關閉 tab？", `Tab「${tab.label}」裡的 pane 都會被關掉。`, "關閉"))) return;
-  await run(() => call("tab.close", { tab_id: tab.tab_id }));
-}
-
 /* ---------- pane panel ---------- */
 
 function renderPaneHeader(pane) {
+  const tool = toolForPane(pane);
   $("pane-title").textContent = paneName(pane);
-  $("pane-sub").textContent = paneMeta(pane);
+  $("pane-sub").textContent = `📁 ${paneFolder(pane)}`;
   const status = $("pane-status");
   status.className = `status ${pane.agent_status}`;
-  status.textContent = STATUS_LABELS[pane.agent_status] || STATUS_LABELS.unknown;
-  $("pane-input").placeholder = pane.agent ? `給 ${pane.display_agent || pane.agent} 的指令…` : "輸入 shell 指令…";
+  status.textContent = statusLabel(pane);
+  const name = tool ? tool.name : pane.display_agent || pane.agent;
+  $("pane-input").placeholder = name ? `跟 ${name} 說…` : "輸入指令…";
+  $("pane-answer").hidden = !pane.agent;
+  const attention = $("pane-attention");
+  attention.hidden = pane.agent_status !== "blocked";
+  $("pane-attention-text").textContent = `${name || "程式"} 在等你回覆。看看畫面最後的問題，用下方的按鈕回答，或直接輸入文字。`;
 }
 
 function openPane(paneId) {
-  const pane = paneById(paneId);
-  if (!pane) return;
   state.openPaneId = paneId;
-  renderPaneHeader(pane);
+  const pane = paneById(paneId);
+  state.openPaneSeen = Boolean(pane);
+  if (pane) renderPaneHeader(pane);
+  else {
+    $("pane-title").textContent = "啟動中…";
+    $("pane-sub").textContent = "";
+    $("pane-attention").hidden = true;
+    $("pane-answer").hidden = false;
+  }
   $("pane-output").textContent = "讀取中…";
   $("pane-panel").hidden = false;
   refreshOutput(true);
@@ -468,10 +754,13 @@ function openPane(paneId) {
 }
 
 function closePane() {
+  const wasOpen = state.openPaneId !== null;
   state.openPaneId = null;
   clearInterval(state.outputTimer);
   state.outputTimer = null;
   $("pane-panel").hidden = true;
+  // Coming back from an install window is the natural moment to look again.
+  if (wasOpen && state.tools?.agents.some((agent) => !agent.installed)) loadTools(true);
 }
 
 async function refreshOutput(forceScroll) {
@@ -479,7 +768,9 @@ async function refreshOutput(forceScroll) {
   if (!paneId || state.outputInFlight || document.hidden) return;
   state.outputInFlight = true;
   try {
-    const result = await call("pane.read", { pane_id: paneId, source: "recent", lines: OUTPUT_LINES });
+    let result = await call("pane.read", { pane_id: paneId, source: "recent", lines: OUTPUT_LINES });
+    // Full-screen programs draw on the alternate screen, which has no history.
+    if (!result?.read?.text?.trim()) result = await call("pane.read", { pane_id: paneId, source: "visible" });
     if (paneId !== state.openPaneId) return;
     const output = $("pane-output");
     const atBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 40;
@@ -489,7 +780,7 @@ async function refreshOutput(forceScroll) {
       if (atBottom || forceScroll) output.scrollTop = output.scrollHeight;
     }
   } catch (err) {
-    if (err.code !== "network") $("pane-output").textContent = `無法讀取輸出：${err.message}`;
+    if (err.code !== "network") $("pane-output").textContent = `無法讀取畫面：${err.message}`;
   } finally {
     state.outputInFlight = false;
   }
@@ -534,34 +825,25 @@ async function sendKey(key) {
   setTimeout(() => refreshOutput(false), 250);
 }
 
-async function startAgentInPane(paneId, kind, name, freshPane) {
-  // A brand-new pane needs a moment before its shell prompt is ready.
-  if (freshPane) await new Promise((resolve) => setTimeout(resolve, 1200));
-  toast(`正在啟動 ${kind}…`);
-  await run(() => call("agent.start", { pane_id: paneId, kind, name, timeout_ms: 30000 }), `${kind} 已就緒`);
-}
-
 async function startAgent() {
   const paneId = state.openPaneId;
   const options = agentOptions();
   if (!paneId) return;
   const values = await openForm({
-    title: "在這個 pane 啟動 agent",
-    text: "pane 必須停在 shell 提示字元，而且 VPS 上要先安裝好該 agent 的 CLI。",
-    fields: [
-      { name: "kind", label: "Agent 種類", type: "select", value: options[0]?.value, options },
-      { name: "name", label: "名稱", placeholder: "例如 reviewer" },
-    ],
+    title: "在這個視窗啟動 AI",
+    text: "視窗要停在可以輸入指令的狀態，而且這台電腦要先安裝好那個 AI 工具。",
+    fields: [{ name: "kind", label: "要啟動哪一個", type: "select", value: options[0]?.value, options }],
     okText: "啟動",
   });
   if (!values || !values.kind) return;
-  await startAgentInPane(paneId, values.kind, values.name || values.kind, false);
+  await run(() => launchInPane(paneId, values.kind));
+  setTimeout(() => refreshOutput(true), 800);
 }
 
 async function splitPane(direction) {
   const paneId = state.openPaneId;
   if (!paneId) return;
-  const result = await run(() => call("pane.split", { target_pane_id: paneId, direction, focus: false }), "已分割 pane");
+  const result = await run(() => call("pane.split", { target_pane_id: paneId, direction, focus: false }), "已分割");
   const newPane = result?.pane?.pane_id;
   if (newPane) setTimeout(() => openPane(newPane), 300);
 }
@@ -569,7 +851,7 @@ async function splitPane(direction) {
 async function renamePane() {
   const pane = paneById(state.openPaneId);
   if (!pane) return;
-  const values = await openForm({ title: "重新命名 pane", fields: [{ name: "label", label: "名稱（留空清除）", value: pane.label || "" }] });
+  const values = await openForm({ title: "重新命名", fields: [{ name: "label", label: "名稱（留空恢復預設）", value: pane.label || "" }] });
   if (!values) return;
   await run(() => call("pane.rename", { pane_id: pane.pane_id, label: values.label || null }));
 }
@@ -577,12 +859,60 @@ async function renamePane() {
 async function killPane() {
   const pane = paneById(state.openPaneId);
   if (!pane) return;
-  if (!(await confirmAction("關閉 pane？", `「${paneName(pane)}」和裡面正在跑的程式都會被終止。`, "關閉"))) return;
+  if (!(await confirmAction("結束這個對話？", `「${paneName(pane)}」和裡面正在跑的程式都會被關掉。你的檔案不會被刪除。`, "結束"))) return;
   const ok = await run(() => call("pane.close", { pane_id: pane.pane_id }).then(() => true));
   if (ok) closePane();
 }
 
 /* ---------- settings ---------- */
+
+function renderToolList() {
+  const list = $("tool-list");
+  list.replaceChildren();
+  const kinds = state.meta.preferred_agents?.length ? state.meta.preferred_agents : Object.keys(AI_TOOLS);
+  for (const kind of kinds) {
+    const tool = AI_TOOLS[kind] || { name: kind, product: kind };
+    const status = toolStatus(kind);
+    const text = !state.tools ? "檢查中…" : status?.installed ? "已安裝" : "還沒安裝";
+    list.append(
+      h(
+        "div",
+        { class: "tool-row" },
+        h("span", { class: `ai-logo small ${tool.tone || "other"}`, text: tool.logo || "?", "aria-hidden": "true" }),
+        h("span", { class: "session-main" }, h("strong", { text: `${tool.name}（${tool.product}）` }), h("span", { class: "muted small", text: status?.path || "" })),
+        h("span", { class: status?.installed ? "ok" : "warn", text }),
+        status && !status.installed
+          ? h("button", { type: "button", class: "small", text: "安裝", onclick: () => offerInstall(kind, tool, status) })
+          : null,
+      ),
+    );
+  }
+  list.append(h("div", { class: "button-row" }, h("button", { type: "button", class: "small ghost", text: "重新檢查", onclick: () => loadTools(true) })));
+}
+
+function renderNotifyStatus() {
+  const button = $("notify-btn");
+  const status = $("notify-status");
+  if (!("Notification" in window)) {
+    button.hidden = true;
+    status.textContent = "這個瀏覽器不支援通知。";
+  } else if (Notification.permission === "granted") {
+    button.hidden = true;
+    status.textContent = "已開啟。";
+  } else if (Notification.permission === "denied") {
+    button.hidden = true;
+    status.textContent = "通知被瀏覽器封鎖了，可以在網址列左邊的設定裡打開。";
+  } else {
+    button.hidden = false;
+    status.textContent = "";
+  }
+}
+
+function renderLastFolder() {
+  const folder = storageGet(LAST_FOLDER_KEY);
+  $("last-folder").textContent = folder || "（還沒有，會從主資料夾開始）";
+  $("clear-folder-btn").hidden = !folder;
+}
 
 function setConfigStatus(text, kind = "") {
   const el = $("config-status");
@@ -607,8 +937,8 @@ async function loadConfig(force = false) {
     $("config-restore-btn").disabled = !data.has_backup;
     state.configLoaded = true;
     state.configDirty = false;
-    let message = data.exists ? "" : "目前還沒有 config.toml，herdr 正在使用預設值。儲存後就會建立。";
-    if (!data.can_validate) message += (message ? "\n" : "") + "伺服器的 Python 版本低於 3.11，無法事先檢查 TOML 語法。";
+    let message = data.exists ? "" : "目前沒有設定檔，herdr 正在使用預設值，這是正常的。";
+    if (!data.can_validate) message += (message ? "\n" : "") + "這台電腦的 Python 版本較舊，存檔前無法檢查語法。";
     setConfigStatus(message);
   } catch (err) {
     setConfigStatus(`讀取失敗：${err.message}`, "err");
@@ -618,8 +948,8 @@ async function loadConfig(force = false) {
 async function validateConfig() {
   const result = await run(() => api("/api/config/validate", { method: "POST", body: { text: $("config-editor").value } }));
   if (!result) return;
-  if (!result.checked) setConfigStatus("無法檢查語法（伺服器 Python 低於 3.11）。", "warn");
-  else if (result.valid) setConfigStatus("TOML 語法正確。", "ok");
+  if (!result.checked) setConfigStatus("無法檢查語法（Python 版本較舊）。", "warn");
+  else if (result.valid) setConfigStatus("語法正確。", "ok");
   else setConfigStatus(`語法錯誤：${result.error}`, "err");
 }
 
@@ -640,7 +970,7 @@ async function saveConfig() {
 }
 
 async function restoreConfig() {
-  if (!(await confirmAction("還原上一版？", "編輯器裡和目前的 config.toml 都會換成上一次儲存前的版本。", "還原"))) return;
+  if (!(await confirmAction("還原上一版？", "設定檔會換回上一次儲存前的版本。", "還原"))) return;
   try {
     const result = await api("/api/config/restore", { method: "POST", body: {} });
     await loadConfig(true);
@@ -668,7 +998,7 @@ function appendDefaultConfig() {
   if (!text) return;
   editor.value = editor.value.trimEnd() + (editor.value.trim() ? "\n\n" : "") + text;
   state.configDirty = true;
-  setConfigStatus("已把預設設定附加到編輯器（還沒儲存）。被註解掉的設定拿掉 # 才會生效。");
+  setConfigStatus("已把預設設定附加到編輯器（還沒儲存）。被 # 註解掉的設定要拿掉 # 才會生效。");
   editor.focus();
 }
 
@@ -677,9 +1007,13 @@ function appendDefaultConfig() {
 function switchView(view) {
   state.view = view;
   for (const tab of document.querySelectorAll(".tab")) tab.classList.toggle("active", tab.dataset.view === view);
-  $("dashboard-view").hidden = view !== "dashboard";
+  $("home-view").hidden = view !== "home";
   $("settings-view").hidden = view !== "settings";
-  if (view === "settings") loadConfig();
+  if (view === "settings") {
+    renderToolList();
+    renderNotifyStatus();
+    renderLastFolder();
+  }
 }
 
 function showLogin() {
@@ -724,6 +1058,7 @@ function connectEvents() {
 async function enterApp() {
   $("login-view").hidden = true;
   $("app-view").hidden = false;
+  renderAiCards();
   try {
     state.meta = await api("/api/meta");
     applyState(await api("/api/state"));
@@ -731,7 +1066,9 @@ async function enterApp() {
     if (err.status !== 401) toast(err.message, "error");
     return;
   }
+  renderAiCards();
   connectEvents();
+  loadTools(false);
 }
 
 async function login(event) {
@@ -756,30 +1093,46 @@ function bind() {
   $("login-form").addEventListener("submit", login);
   $("logout-btn").addEventListener("click", logout);
   for (const tab of document.querySelectorAll(".tab")) tab.addEventListener("click", () => switchView(tab.dataset.view));
+  $("recheck-btn").addEventListener("click", () => loadTools(true));
   $("new-workspace-btn").addEventListener("click", createWorkspace);
-  $("start-server-btn").addEventListener("click", () => run(() => api("/api/server/start", { method: "POST", body: {} }), "已送出啟動指令"));
+  $("start-server-btn").addEventListener("click", () => run(() => api("/api/server/start", { method: "POST", body: {} }), "正在啟動 herdr…"));
+
+  $("folder-up-btn").addEventListener("click", () => {
+    if (state.folder?.parent) showFolder(state.folder.parent);
+  });
 
   $("pane-close-btn").addEventListener("click", closePane);
   $("pane-input-form").addEventListener("submit", sendInput);
   $("pane-input").addEventListener("keydown", (event) => {
     if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) sendInput(event);
   });
-  $("pane-keys").addEventListener("click", (event) => {
-    const key = event.target.closest("button")?.dataset.key;
-    if (key) sendKey(key);
-  });
+  for (const id of ["pane-keys", "pane-answer-keys"]) {
+    $(id).addEventListener("click", (event) => {
+      const key = event.target.closest("button")?.dataset.key;
+      if (key) sendKey(key);
+    });
+  }
   $("pane-start-agent-btn").addEventListener("click", startAgent);
   $("pane-split-right-btn").addEventListener("click", () => splitPane("right"));
   $("pane-split-down-btn").addEventListener("click", () => splitPane("down"));
   $("pane-rename-btn").addEventListener("click", renamePane);
   $("pane-kill-btn").addEventListener("click", killPane);
   document.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !$("pane-panel").hidden && !$("form-dialog").open) closePane();
+    if (event.key === "Escape" && !$("pane-panel").hidden && !$("form-dialog").open && !$("folder-dialog").open) closePane();
   });
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) refreshOutput(false);
   });
 
+  $("notify-btn").addEventListener("click", () => Notification.requestPermission().then(renderNotifyStatus));
+  $("clear-folder-btn").addEventListener("click", () => {
+    storageSet(LAST_FOLDER_KEY, null);
+    renderLastFolder();
+  });
+
+  $("config-section").addEventListener("toggle", () => {
+    if ($("config-section").open) loadConfig();
+  });
   $("config-editor").addEventListener("input", () => {
     state.configDirty = true;
   });
@@ -794,7 +1147,7 @@ function bind() {
 }
 
 function takeLoginFromUrl() {
-  // herdr-web --open passes a one-run password in the fragment; never keep it in history.
+  // The Mac app and start.sh pass a password in the fragment; never keep it in history.
   const params = new URLSearchParams(location.hash.slice(1));
   const password = params.get("login");
   if (password !== null) history.replaceState(null, "", location.pathname + location.search);

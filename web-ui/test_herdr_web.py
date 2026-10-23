@@ -253,6 +253,49 @@ class StaticTests(BridgeTestCase):
         conn.close()
 
 
+class HomeScreenTests(BridgeTestCase):
+    def test_session_reports_version(self) -> None:
+        _, data, _ = self.request("GET", "/api/session")
+        self.assertEqual(data["version"], herdr_web.__version__)
+
+    def test_dirs_lists_visible_subfolders(self) -> None:
+        self.login()
+        root = Path(self.tmp.name) / "projects"
+        (root / "beta").mkdir(parents=True)
+        (root / "Alpha").mkdir()
+        (root / ".hidden").mkdir()
+        (root / "notes.txt").write_text("x")
+        status, data, _ = self.request("GET", f"/api/dirs?path={root}")
+        self.assertEqual(status, 200)
+        self.assertEqual(data["entries"], ["Alpha", "beta"])
+        self.assertEqual(data["parent"], str(root.parent.resolve()))
+        self.assertEqual(data["shortcuts"][0]["path"], str(Path.home()))
+
+    def test_dirs_rejects_a_file(self) -> None:
+        self.login()
+        target = Path(self.tmp.name) / "file.txt"
+        target.write_text("x")
+        status, data, _ = self.request("GET", f"/api/dirs?path={target}")
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"]["code"], "not_a_directory")
+
+    def test_dirs_requires_login(self) -> None:
+        status, _, _ = self.request("GET", "/api/dirs")
+        self.assertEqual(status, 401)
+
+    def test_agents_report_install_state_and_commands(self) -> None:
+        self.login()
+        found = {"claude": "/usr/local/bin/claude", "codex": None, "grok": None, "npm": None, "brew": "/opt/homebrew/bin/brew"}
+        with mock.patch.object(herdr_web, "find_commands", return_value=found):
+            status, data, _ = self.request("GET", "/api/agents?refresh=1")
+        self.assertEqual(status, 200)
+        by_kind = {agent["kind"]: agent for agent in data["agents"]}
+        self.assertTrue(by_kind["claude"]["installed"])
+        self.assertFalse(by_kind["codex"]["installed"])
+        self.assertEqual(by_kind["codex"]["install"], "brew install --cask codex")
+        self.assertIsNone(by_kind["grok"]["install"])
+
+
 class StartServerTests(BridgeTestCase):
     def test_running_server_is_not_restarted(self) -> None:
         with mock.patch.object(self.app, "start_herdr_server") as start:
