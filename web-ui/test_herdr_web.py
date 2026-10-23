@@ -279,6 +279,38 @@ class HomeScreenTests(BridgeTestCase):
         self.assertEqual(status, 400)
         self.assertEqual(data["error"]["code"], "not_a_directory")
 
+    def test_dirs_reports_permission_denied(self) -> None:
+        self.login()
+        with mock.patch.object(herdr_web.os, "scandir", side_effect=PermissionError("denied")):
+            status, data, _ = self.request("GET", f"/api/dirs?path={self.tmp.name}")
+        self.assertEqual(status, 400)
+        self.assertEqual(data["error"]["code"], "permission_denied")
+
+    def test_create_folder_and_list_it(self) -> None:
+        self.login()
+        parent = Path(self.tmp.name)
+        status, data, _ = self.request("POST", "/api/dirs/create", {"parent": str(parent), "name": "AI 專案"})
+        self.assertEqual(status, 200)
+        self.assertTrue((parent / "AI 專案").is_dir())
+        self.assertEqual(data["path"], str((parent / "AI 專案").resolve()))
+        # Creating it again just opens the existing folder.
+        status, _, _ = self.request("POST", "/api/dirs/create", {"parent": str(parent), "name": "AI 專案"})
+        self.assertEqual(status, 200)
+
+    def test_create_folder_rejects_bad_names(self) -> None:
+        self.login()
+        for name in ["", "..", "a/b", ".hidden"]:
+            status, data, _ = self.request("POST", "/api/dirs/create", {"parent": self.tmp.name, "name": name})
+            self.assertEqual(status, 400, name)
+            self.assertEqual(data["error"]["code"], "invalid_name", name)
+        self.assertEqual(sorted(os.listdir(self.tmp.name)), ["herdr.sock"])
+
+    def test_create_folder_needs_csrf_header(self) -> None:
+        self.login()
+        status, _, _ = self.request("POST", "/api/dirs/create", {"parent": self.tmp.name, "name": "x"}, csrf=False)
+        self.assertEqual(status, 403)
+        self.assertFalse((Path(self.tmp.name) / "x").exists())
+
     def test_dirs_requires_login(self) -> None:
         status, _, _ = self.request("GET", "/api/dirs")
         self.assertEqual(status, 401)
@@ -292,8 +324,8 @@ class HomeScreenTests(BridgeTestCase):
         by_kind = {agent["kind"]: agent for agent in data["agents"]}
         self.assertTrue(by_kind["claude"]["installed"])
         self.assertFalse(by_kind["codex"]["installed"])
-        self.assertEqual(by_kind["codex"]["install"], "brew install --cask codex")
-        self.assertIsNone(by_kind["grok"]["install"])
+        self.assertIn("install_codex.py", by_kind["codex"]["install"])
+        self.assertIn("https://x.ai/cli/install.sh", by_kind["grok"]["install"])
 
 
 class StartServerTests(BridgeTestCase):

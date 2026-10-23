@@ -15,14 +15,14 @@ const STATUS_RANK = { blocked: 0, working: 1, done: 2, idle: 3, unknown: 4 };
 const AI_TOOLS = {
   claude: { kind: "claude", name: "Claude", product: "Claude Code", account: "Claude 帳號", command: "claude", logo: "C", tone: "claude" },
   codex: { kind: "codex", name: "ChatGPT", product: "Codex", account: "ChatGPT 帳號", command: "codex", logo: "G", tone: "chatgpt" },
-  grok: { kind: "grok", name: "Grok", product: "Grok CLI", account: "Grok 帳號", command: "grok", logo: "X", tone: "grok" },
+  grok: { kind: "grok", name: "Grok", product: "Grok Build", account: "Grok 帳號", command: "grok", logo: "X", tone: "grok" },
 };
 
 /* Names for the agent picker in the advanced view. */
 const AGENT_LABELS = {
   claude: "Claude（Claude Code）",
   codex: "ChatGPT（Codex）",
-  grok: "Grok（Grok CLI）",
+  grok: "Grok（Grok Build）",
   gemini: "Gemini CLI",
   copilot: "GitHub Copilot CLI",
   cursor: "Cursor Agent CLI",
@@ -251,7 +251,7 @@ async function showFolder(path) {
   } catch (err) {
     // A remembered folder may have been moved or deleted: start from home instead.
     if (path && !state.folder) return showFolder(null);
-    $("folder-error").textContent = `打不開這個資料夾：${err.message}`;
+    $("folder-error").textContent = folderErrorText(err, path);
     return;
   }
   $("folder-ok").disabled = false;
@@ -291,6 +291,33 @@ async function showFolder(path) {
     );
   }
   list.scrollTop = 0;
+}
+
+function folderErrorText(err, path) {
+  if (err.code === "permission_denied") {
+    return `macOS 保護了「${basename(path) || "這個資料夾"}」，herdr 沒有權限讀取（「桌面」「文件」「下載」和雲端硬碟都會這樣）。` +
+      "請回到「主資料夾」，按「＋ 新增資料夾」建一個專案資料夾來用。";
+  }
+  return `打不開這個資料夾：${err.message}`;
+}
+
+async function createFolder() {
+  const parent = state.folder?.path;
+  if (!parent) return;
+  const values = await openForm({
+    title: "新增資料夾",
+    text: `會建立在「${state.folder.name}」裡面。`,
+    fields: [{ name: "name", label: "資料夾名稱", value: "AI 專案", required: true }],
+    okText: "建立",
+  });
+  if (!values || !values.name) return;
+  try {
+    const data = await api("/api/dirs/create", { method: "POST", body: { parent, name: values.name } });
+    await showFolder(data.path);
+  } catch (err) {
+    $("folder-error").textContent =
+      err.code === "invalid_name" ? "名稱不能是空的、不能用 . 開頭，也不能有 /。" : folderErrorText(err, parent);
+  }
 }
 
 function pickFolder(title) {
@@ -465,19 +492,12 @@ async function startSession(tool, folder) {
 
 async function offerInstall(kind, tool, status) {
   if (!status?.install) {
-    await inform(
-      `${tool.name} 還沒安裝`,
-      kind === "grok"
-        ? "Grok CLI 需要依照 xAI 的官方說明安裝。裝好之後回到這裡按「重新檢查」。"
-        : kind === "codex"
-          ? "安裝 Codex 需要先安裝 Node.js（nodejs.org）。裝好之後回到這裡按「重新檢查」。"
-          : `${tool.product} 需要先安裝。裝好之後回到這裡按「重新檢查」。`,
-    );
+    await inform(`${tool.name} 還沒安裝`, `${tool.product} 需要先安裝。裝好之後回到這裡按「重新檢查」。`);
     return;
   }
   const ok = await confirmAction(
     `安裝 ${tool.product}？`,
-    `會打開一個視窗顯示安裝過程（指令：${status.install}）。裝好後第一次使用時，畫面會引導你登入${tool.account}。`,
+    `會從官方來源下載安裝，並打開一個視窗顯示進度，大約一兩分鐘。裝好後第一次使用時，畫面會引導你登入${tool.account}（和桌面版同一個帳號）。`,
     "安裝",
     false,
   );
@@ -1097,6 +1117,7 @@ function bind() {
   $("new-workspace-btn").addEventListener("click", createWorkspace);
   $("start-server-btn").addEventListener("click", () => run(() => api("/api/server/start", { method: "POST", body: {} }), "正在啟動 herdr…"));
 
+  $("folder-new-btn").addEventListener("click", createFolder);
   $("folder-up-btn").addEventListener("click", () => {
     if (state.folder?.parent) showFolder(state.folder.parent);
   });

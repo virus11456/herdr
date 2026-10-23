@@ -76,13 +76,14 @@ cd herdr
 herdr 不直接連 AI 網站，而是在 pane 裡執行各家的命令列 agent。網頁的「啟動 agent」選單
 預設把這三個排在最前面（可用 `--preferred-agents` 調整）：
 
-| 你的訂閱 | 要安裝的 CLI | herdr 名稱 | 安裝與登入 |
+| 你的訂閱 | 命令列工具 | herdr 名稱 | 一鍵安裝會執行 |
 | --- | --- | --- | --- |
-| Claude（Pro / Max） | Claude Code | `claude` | `npm install -g @anthropic-ai/claude-code`，執行 `claude` 後用 Claude 帳號登入 |
-| ChatGPT（Plus / Pro） | Codex CLI | `codex` | `npm install -g @openai/codex`，執行 `codex` 後選「Sign in with ChatGPT」 |
-| Grok | Grok CLI | `grok` | 依 xAI 官方說明安裝，執行 `grok` 登入一次 |
+| Claude（Pro / Max） | Claude Code | `claude` | 官方安裝程式 `curl -fsSL https://claude.ai/install.sh \| bash` |
+| ChatGPT（Plus / Pro） | Codex | `codex` | `install_codex.py`：從 npm registry 下載 OpenAI 官方的原生執行檔套件，驗證 SHA-512 後裝到 `~/.local/bin/codex`，不需要 Node.js |
+| Grok | Grok Build | `grok` | 官方安裝程式 `curl -fsSL https://x.ai/cli/install.sh \| bash` |
 
-每個 CLI 先在一般終端機執行並登入一次，之後在 herdr 裡就能直接啟動。
+首頁卡片顯示「還沒安裝」時點一下就能安裝。這些命令列工具和各家的桌面版 App 是不同的程式，
+登入狀態和對話紀錄不共用，但用的是同一個帳號和訂閱；第一次使用時登入一次即可。
 
 建議再安裝 herdr 的整合，讓狀態偵測和 session 還原更準確：
 

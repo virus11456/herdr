@@ -475,3 +475,4 @@ button.chip.active { border-color: var(--accent); color: var(--accent); }
 .answer-row { display: grid; gap: 6px; }
 .answer-row .keys.big button { min-width: 48px; }
 .answer-row .keys { flex-wrap: wrap; overflow: visible; }
+.folder-current #folder-new-btn { flex: none; }

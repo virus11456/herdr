@@ -38,7 +38,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - depends on interpreter
     tomllib = None
 
-__version__ = "0.2.1"
+__version__ = "0.2.2"
 
 log = logging.getLogger("herdr-web")
 
@@ -88,12 +88,14 @@ FALLBACK_AGENT_KINDS = [
     "pi", "devin", "cline", "droid", "grok", "kimi", "kiro", "qwen",
 ]
 
-# The AI tools offered on the home screen: herdr agent kind -> how to install it.
-# None means there is no install command we can run for the user.
+# The AI tools offered on the home screen: herdr agent kind -> the official
+# installer, run visibly in a new pane. Codex has no standalone installer, so
+# install_codex.py unpacks OpenAI's native npm platform package without Node.js.
+CODEX_INSTALLER = Path(__file__).resolve().parent / "install_codex.py"
 AGENT_INSTALLERS = {
     "claude": "curl -fsSL https://claude.ai/install.sh | bash",
-    "codex": None,  # chosen at runtime: npm or Homebrew
-    "grok": None,
+    "codex": f"{shlex.quote(sys.executable)} {shlex.quote(str(CODEX_INSTALLER))}",
+    "grok": "curl -fsSL https://x.ai/cli/install.sh | bash",
 }
 AGENT_DETECT_TTL_SECONDS = 60
 MAX_DIR_ENTRIES = 500
@@ -477,11 +479,6 @@ class AgentCatalog:
         agents = []
         for kind in self.kinds:
             install = AGENT_INSTALLERS.get(kind)
-            if kind == "codex":
-                if found.get("npm"):
-                    install = "npm install -g @openai/codex"
-                elif found.get("brew"):
-                    install = "brew install --cask codex"
             agents.append({"kind": kind, "installed": bool(found.get(kind)), "path": found.get(kind), "install": install})
         result = {"agents": agents, "has_npm": bool(found.get("npm")), "has_brew": bool(found.get("brew"))}
         with self._lock:
@@ -527,6 +524,26 @@ def list_directories(raw_path: str | None) -> dict:
         "truncated": len(names) > MAX_DIR_ENTRIES,
         "shortcuts": shortcuts,
     }
+
+
+def create_directory(parent: str, name: str) -> Path:
+    """Create a new sub-folder for the folder picker and return its path."""
+    name = name.strip()
+    if not name or name in (".", "..") or "/" in name or "\0" in name or name.startswith(".") or len(name) > 100:
+        raise HerdrError("invalid_name", "folder names cannot be empty, start with a dot, or contain /")
+    base = Path(parent).expanduser()
+    if not base.is_dir():
+        raise HerdrError("not_a_directory", f"{base} is not a folder")
+    target = base / name
+    try:
+        target.mkdir(exist_ok=True)
+    except PermissionError as exc:
+        raise HerdrError("permission_denied", f"no permission to create a folder in {base}") from exc
+    except OSError as exc:
+        raise HerdrError("create_failed", str(exc)) from exc
+    if not target.is_dir():
+        raise HerdrError("create_failed", f"{target} exists and is not a folder")
+    return target
 
 
 class App:
@@ -738,6 +755,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
             error = ConfigStore.validate(text)
             self.send_json(HTTPStatus.OK, {"valid": error is None, "error": error, "checked": tomllib is not None})
+        elif path == "/api/dirs/create":
+            parent, name = body.get("parent"), body.get("name")
+            if not isinstance(parent, str) or not isinstance(name, str):
+                self.send_error_json(HTTPStatus.BAD_REQUEST, "invalid_params", "parent and name must be strings")
+                return
+            try:
+                created = create_directory(parent, name)
+                self.send_json(HTTPStatus.OK, list_directories(str(created)))
+            except HerdrError as exc:
+                self.send_error_json(HTTPStatus.BAD_REQUEST, exc.code, exc.message)
         elif path == "/api/config/restore":
             self.handle_config_restore()
         elif path == "/api/server/start":
