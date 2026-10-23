@@ -1,0 +1,12 @@
+# systemd user service: keeps the herdr server running on a VPS.
+# Install: cp herdr.service ~/.config/systemd/user/ && systemctl --user enable --now herdr
+[Unit]
+Description=herdr server (headless)
+
+[Service]
+ExecStart=%h/.local/bin/herdr server
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
