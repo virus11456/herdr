@@ -30,19 +30,25 @@ FAKE_AGENT = textwrap.dedent(
     mode = os.environ.get("FAKE_AGENT_MODE", "ok")
     def out(obj):
         print(json.dumps(obj), flush=True)
-    if kind == "gemini":
+    if kind == "agy":
         if mode == "login":
-            sys.stderr.write("Please set an Auth method in your settings.json\n")
-            sys.exit(0)
-        session = args[args.index("--resume") + 1] if "--resume" in args else args[args.index("--session-id") + 1]
-        out({"type": "init", "session_id": session, "model": "gemini"})
-        out({"type": "message", "role": "user", "content": "x"})
-        out({"type": "message", "role": "assistant", "content": "Gemini ", "delta": True})
-        out({"type": "message", "role": "assistant", "content": "先看一下", "delta": True})
-        out({"type": "tool_use", "tool_name": "read_file", "parameters": {"file_path": "/a/notes.md"}})
-        out({"type": "tool_result", "status": "success", "output": "..."})
-        out({"type": "message", "role": "assistant", "content": "看完了", "delta": True})
-        out({"type": "result", "status": "success"})
+            sys.stderr.write("Authentication required. Please visit the URL to log in:\n  https://accounts.google.com/o/oauth2/auth?x=1\n")
+            sys.stderr.flush()
+            time.sleep(30)
+            out({"event": "result", "result": {"conversation_id": "", "status": "ERROR", "response": "", "error": "authentication failed or timed out"}})
+            sys.exit(1)
+        conversation = args[args.index("--conversation") + 1] if "--conversation" in args else str(uuid.uuid4())
+        def step(index, step_type, **extra):
+            out(dict({"event": "step_update", "conversation_id": conversation, "step_index": index, "state": "ACTIVE", "step_type": step_type}, **extra))
+        out({"event": "init", "conversation_id": conversation, "init": {"cwd": os.getcwd(), "tools": [], "permission_mode": "request-review"}})
+        step(0, "user_input", text_delta="x")
+        step(1, "agent_response", text_delta="Gemini ")
+        step(1, "agent_response", text_delta="先看一下")
+        step(2, "tool", tool_name="read_file", tool_info={"name": "read_file", "parameters": {"path": "/a/notes.md"}})
+        step(2, "tool", tool_name="read_file", state="DONE", tool_info={"name": "read_file", "output": "..."})
+        out({"event": "step_update", "conversation_id": "sub-1", "step_index": 0, "state": "ACTIVE", "step_type": "agent_response", "text_delta": "子代理的話"})
+        step(3, "agent_response", text_delta="看完了")
+        out({"event": "result", "conversation_id": conversation, "result": {"conversation_id": conversation, "status": "SUCCESS", "response": "看完了", "num_turns": 1}})
         sys.exit(0)
     if kind == "codex":
         prompt = args[-1]
@@ -89,7 +95,7 @@ class ChatTestCase(unittest.TestCase):
         root = Path(self.tmp.name)
         self.bin = root / "bin"
         self.bin.mkdir()
-        for kind in ("claude", "codex", "grok", "gemini"):
+        for kind in ("claude", "codex", "grok", "agy"):
             path = self.bin / kind
             path.write_text(FAKE_AGENT)
             path.chmod(0o755)
@@ -334,30 +340,68 @@ class LeaderTests(ChatTestCase):
 
 
 class GeminiTests(ChatTestCase):
-    def test_gemini_stream_is_joined_and_resumed(self) -> None:
-        room = self.manager.create("demo", str(self.folder), ["gemini", "claude"], True)
+    def test_gemini_runs_antigravity_and_resumes_its_conversation(self) -> None:
+        room = self.manager.create("demo", str(self.folder), ["agy", "claude"], True)
         self.manager.post(room.id, "@Gemini 你好", [])
         self.wait_idle(room)
-        reply = self.agent_messages(room, "gemini")[0]
+        reply = self.agent_messages(room, "agy")[0]
         self.assertEqual(reply["status"], "done", reply)
         self.assertEqual(reply["text"], "Gemini 先看一下\n\n看完了")
         self.assertEqual(reply["activity"], ["讀取 notes.md"])
-        first = self.calls()[0]["args"]
-        self.assertIn("--skip-trust", first)
-        self.assertEqual(first[first.index("--approval-mode") + 1], "auto_edit")
-        session = first[first.index("--session-id") + 1]
+        first = self.calls()[0]
+        self.assertEqual(first["kind"], "agy")
+        self.assertEqual(first["cwd"], os.path.realpath(self.folder))
+        self.assertEqual(first["args"][first["args"].index("--mode") + 1], "accept-edits")
+        self.assertNotIn("--conversation", first["args"])
+        conversation = room.data["sessions"]["agy"]
         self.manager.post(room.id, "@gemini 再一次", [])
         self.wait_idle(room)
         second = self.calls()[1]["args"]
-        self.assertEqual(second[second.index("--resume") + 1], session)
+        self.assertEqual(second[second.index("--conversation") + 1], conversation)
 
-    def test_gemini_without_login_shows_login_error(self) -> None:
+    def test_read_only_room_reminds_gemini_every_turn(self) -> None:
+        room = self.manager.create("demo", str(self.folder), ["agy"], False)
+        for text in ("一", "二"):
+            self.manager.post(room.id, text, ["agy"])
+            self.wait_idle(room)
+        for call in self.calls():
+            self.assertNotIn("--mode", call["args"])
+            prompt = call["args"][call["args"].index("-p") + 1]
+            self.assertIn("唯讀模式", prompt)
+
+    def test_gemini_without_login_stops_at_once_and_asks_to_log_in(self) -> None:
         os.environ["FAKE_AGENT_MODE"] = "login"
-        room = self.manager.create("demo", str(self.folder), ["gemini"], False)
-        self.manager.post(room.id, "hi", ["gemini"])
+        room = self.manager.create("demo", str(self.folder), ["agy"], False)
+        started = time.monotonic()
+        self.manager.post(room.id, "hi", ["agy"])
         self.wait_idle(room)
-        reply = self.agent_messages(room, "gemini")[0]
+        self.assertLess(time.monotonic() - started, 15)
+        reply = self.agent_messages(room, "agy")[0]
         self.assertEqual((reply["status"], reply["error_kind"]), ("error", "login"), reply)
+        self.assertNotIn("agy", room.data["sessions"])
+
+    def test_rooms_with_the_old_gemini_member_are_migrated(self) -> None:
+        data_dir = Path(self.tmp.name) / "legacy"
+        rooms = data_dir / "rooms"
+        rooms.mkdir(parents=True)
+        legacy = {
+            "id": "r1", "name": "old", "folder": str(self.folder), "members": ["claude", "gemini"],
+            "leader": "gemini", "allow_edits": False, "sessions": {"gemini": "old-uuid", "claude": "c1"},
+            "seen": {"gemini": 2}, "created_at": 1, "updated_at": 1,
+            "messages": [
+                {"id": "m1", "from": "gemini", "text": "舊回覆", "status": "done"},
+                {"id": "m2", "from": "user", "text": "回覆", "status": "done", "reply_to": {"id": "m1", "from": "gemini", "excerpt": "舊"}},
+            ],
+        }
+        (rooms / "r1.json").write_text(json.dumps(legacy))
+        manager = chat.ChatManager(data_dir, lambda kind: str(self.bin / kind))
+        data = manager.get("r1").data
+        self.assertEqual(data["members"], ["claude", "agy"])
+        self.assertEqual(data["leader"], "agy")
+        self.assertEqual(data["sessions"], {"claude": "c1"})
+        self.assertEqual(data["seen"], {"agy": 2})
+        self.assertEqual(data["messages"][0]["from"], "agy")
+        self.assertEqual(data["messages"][1]["reply_to"]["from"], "agy")
 
 
 class ReplyTests(ChatTestCase):

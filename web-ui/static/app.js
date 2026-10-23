@@ -16,7 +16,7 @@ const AI_TOOLS = {
   claude: { kind: "claude", name: "Claude", product: "Claude Code", account: "Claude 帳號", command: "claude", logo: "C", tone: "claude" },
   codex: { kind: "codex", name: "ChatGPT", product: "Codex", account: "ChatGPT 帳號", command: "codex", logo: "G", tone: "chatgpt" },
   grok: { kind: "grok", name: "Grok", product: "Grok Build", account: "Grok 帳號", command: "grok", logo: "X", tone: "grok" },
-  gemini: { kind: "gemini", name: "Gemini", product: "Gemini CLI", account: "Google 帳號", command: "gemini", logo: "✦", tone: "gemini" },
+  agy: { kind: "agy", name: "Gemini", product: "Antigravity CLI", account: "Google 帳號", command: "agy", logo: "✦", tone: "gemini" },
 };
 
 /* Names for the agent picker in the advanced view. */
@@ -24,7 +24,8 @@ const AGENT_LABELS = {
   claude: "Claude（Claude Code）",
   codex: "ChatGPT（Codex）",
   grok: "Grok（Grok Build）",
-  gemini: "Gemini（Gemini CLI）",
+  agy: "Gemini（Antigravity CLI）",
+  gemini: "Gemini CLI（舊版）",
   copilot: "GitHub Copilot CLI",
   cursor: "Cursor Agent CLI",
   opencode: "OpenCode",
@@ -808,6 +809,7 @@ function openPane(paneId) {
     $("pane-answer").hidden = false;
   }
   $("pane-output").textContent = "讀取中…";
+  $("pane-link").hidden = true;
   $("pane-panel").hidden = false;
   refreshOutput(true);
   clearInterval(state.outputTimer);
@@ -824,6 +826,35 @@ function closePane() {
   if (wasOpen && state.tools?.agents.some((agent) => !agent.installed)) loadTools(true);
 }
 
+/* Sign-in pages the AI tools send people to; links elsewhere stay plain text. */
+const SIGN_IN_HOSTS = ["accounts.google.com", "auth.openai.com", "claude.ai", "claude.com", "console.anthropic.com", "accounts.x.ai", "auth.x.ai"];
+
+/* Terminal tools print long sign-in URLs wrapped over several indented lines;
+   join them back together and offer the newest one as a button. */
+function findSignInLink(text) {
+  const lines = text.split("\n");
+  let found = null;
+  for (let i = 0; i < lines.length; i++) {
+    let url = lines[i].trim();
+    if (!/^https:\/\/\S+$/.test(url)) continue;
+    while (i + 1 < lines.length && /^\S+$/.test(lines[i + 1].trim())) url += lines[++i].trim();
+    try {
+      const parsed = new URL(url);
+      if (SIGN_IN_HOSTS.includes(parsed.hostname)) found = parsed.href;
+    } catch (err) {
+      /* not a URL after all */
+    }
+  }
+  return found;
+}
+
+function showSignInLink(text) {
+  const link = $("pane-link");
+  const url = findSignInLink(text);
+  link.hidden = !url;
+  if (url && link.href !== url) link.href = url;
+}
+
 async function refreshOutput(forceScroll) {
   const paneId = state.openPaneId;
   if (!paneId || state.outputInFlight || document.hidden) return;
@@ -836,6 +867,7 @@ async function refreshOutput(forceScroll) {
     const output = $("pane-output");
     const atBottom = output.scrollHeight - output.scrollTop - output.clientHeight < 40;
     const text = result?.read?.text ?? "";
+    showSignInLink(text);
     if (output.textContent !== text) {
       output.textContent = text;
       if (atBottom || forceScroll) output.scrollTop = output.scrollHeight;
@@ -1119,6 +1151,7 @@ function connectEvents() {
     if (source.readyState === EventSource.CLOSED) {
       try {
         const session = await api("/api/session");
+        showVersion(session.version);
         if (!session.authenticated) return showLogin();
       } catch (err) {
         /* network down; retry below */
@@ -1231,11 +1264,17 @@ function takeLoginFromUrl() {
   return password;
 }
 
+function showVersion(version) {
+  if (!version) return;
+  for (const el of document.querySelectorAll(".app-version")) el.textContent = `v${version}`;
+}
+
 async function boot() {
   bind();
   const urlPassword = takeLoginFromUrl();
   try {
     const session = await api("/api/session");
+    showVersion(session.version);
     if (session.authenticated) return await enterApp();
     if (urlPassword) {
       try {

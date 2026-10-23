@@ -25,7 +25,7 @@ printf 'APPL????' > "$app/Contents/PkgInfo"
 cp "$here/herdr-web" "$app/Contents/MacOS/herdr-web"
 chmod 755 "$app/Contents/MacOS/herdr-web"
 cp "$here/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
-cp "$web_ui/herdr_web.py" "$web_ui/chat.py" "$web_ui/install_codex.py" "$web_ui/install_gemini.py" "$app/Contents/Resources/web-ui/"
+cp "$web_ui/herdr_web.py" "$web_ui/chat.py" "$web_ui/install_codex.py" "$app/Contents/Resources/web-ui/"
 cp -R "$web_ui/static" "$app/Contents/Resources/web-ui/static"
 cp "$here/README.txt" "$stage/README.txt"
 

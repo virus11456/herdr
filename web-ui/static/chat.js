@@ -5,8 +5,8 @@
    confirmAction, AI_TOOLS, state, openPane, offerInstall, toolStatus). */
 
 const TARGETS_KEY = "herdr-web:targets:";
-const MENTION_NAMES = { claude: "claude", chatgpt: "codex", codex: "codex", gpt: "codex", grok: "grok", gemini: "gemini" };
-const MENTION_PATTERN = /[@＠](claude|chatgpt|codex|gpt|grok|gemini)(?![A-Za-z])/gi;
+const MENTION_NAMES = { claude: "claude", chatgpt: "codex", codex: "codex", gpt: "codex", grok: "grok", gemini: "agy", agy: "agy" };
+const MENTION_PATTERN = /[@＠](claude|chatgpt|codex|gpt|grok|gemini|agy)(?![A-Za-z])/gi;
 
 const chat = {
   rooms: [],
@@ -148,7 +148,7 @@ function renderRichText(text) {
     }
     for (const line of part.split("\n")) {
       const heading = line.match(/^#{1,4}\s+(.*)$/);
-      if (/^\s*(?:[-*•]\s*|\d+[.)]\s*)?\**[@＠]\s*(claude|chatgpt|codex|gpt|grok|gemini)\s*\**\s*[:：]/i.test(line)) {
+      if (/^\s*(?:[-*•]\s*|\d+[.)]\s*)?\**[@＠]\s*(claude|chatgpt|codex|gpt|grok|gemini|agy)\s*\**\s*[:：]/i.test(line)) {
         const row = h("p", { class: "rich-assign" });
         appendInline(row, line.trim());
         root.append(row);
@@ -498,28 +498,23 @@ function errorBox(message, tool) {
   return box;
 }
 
-const GEMINI_KEY_URL = "https://aistudio.google.com/app/apikey";
-
-/* Google no longer lets personal Google accounts sign in to Gemini CLI,
-   so walk the user through the free API key route instead. */
-async function explainGeminiKey() {
-  const ok = await openForm({
-    title: "Gemini 要用「API 金鑰」登入",
+/* Gemini runs through Google's Antigravity CLI, whose first run asks how to sign in. */
+async function explainGeminiLogin() {
+  await openForm({
+    title: "登入 Gemini（用你的 Google 帳號）",
     text:
-      "Google 已經不讓個人 Google 帳號直接登入 Gemini CLI（選 1 會出現「This client is no longer supported」）。\n\n" +
-      "改用免費的 API 金鑰：\n" +
-      "1. 按下面的按鈕，打開 Google AI Studio，用你的 Google 帳號登入，按「Create API key」，再按複製。\n" +
-      "2. 回到這裡的 Gemini 視窗，用 ↓ 選「2. Use Gemini API Key」，按 Enter。\n" +
-      "3. 把金鑰貼到下方的輸入框送出，看到可以打字就成功了。\n\n" +
-      "金鑰只存在你這台 Mac 的鑰匙圈裡。免費額度聊天夠用，跟你的 Gemini 訂閱是分開算的。",
-    okText: "打開取得金鑰的網頁",
-    cancelText: "我已經有金鑰了",
+      "Google 已經把個人帳號的 Gemini 命令列工具換成「Antigravity CLI」，你的 Gemini 訂閱也是用它。\n\n" +
+      "1. 接下來的視窗出現「Select login method」時，直接按 Enter（選 1. Google OAuth）。\n" +
+      "2. 瀏覽器會打開 Google 登入頁；沒打開的話，按視窗上方的「🔗 打開登入網頁」。\n" +
+      "3. 登入並按「允許」。如果網頁顯示一串授權碼，按複製，貼到下方的輸入框送出。\n" +
+      "4. 如果問你要不要信任這個資料夾，選信任。看到可以打字的畫面就完成了，按「← 返回」。",
+    okText: "開始登入",
+    cancelText: "",
   });
-  if (ok) window.open(GEMINI_KEY_URL, "_blank", "noopener");
 }
 
 async function startLogin(kind) {
-  if (kind === "gemini") await explainGeminiKey();
+  if (kind === "agy") await explainGeminiLogin();
   const status = toolStatus(kind);
   const tool = chatTool(kind);
   const command = status?.login || tool.command;

@@ -21,12 +21,13 @@
       <input id="login-password" type="password" autocomplete="current-password" required>
       <button type="submit" class="primary">登入</button>
       <p id="login-error" class="error-text" role="alert"></p>
+      <p class="app-version muted"></p>
     </form>
   </section>
 
   <section id="app-view" hidden>
     <header class="topbar">
-      <div class="brand"><img src="icon.svg" alt="" class="brand-icon"><span>herdr 控制台</span></div>
+      <div class="brand"><img src="icon.svg" alt="" class="brand-icon"><span>herdr 控制台</span><span class="app-version"></span></div>
       <span id="conn-pill" class="pill">連線中</span>
       <nav class="tabs" aria-label="主選單">
         <button type="button" data-view="chat" class="tab active">聊天</button>
@@ -50,7 +51,7 @@
         <section class="room-pane">
           <div id="room-empty" class="room-empty">
             <p>選一個聊天室，或建立新的聊天室。</p>
-            <p class="muted small">在聊天室裡可以同時問三個 AI，它們看得到彼此的回覆，也可以按「讓他們討論」讓它們互相回應。</p>
+            <p class="muted small">在聊天室裡可以同時問好幾個 AI，它們看得到彼此的回覆，也可以按「讓他們討論」讓它們互相回應。</p>
           </div>
           <div id="room-main" class="room-main" hidden>
             <header class="room-head">
@@ -210,6 +211,7 @@
     <div id="pane-attention" class="attention" hidden>
       <p id="pane-attention-text"></p>
     </div>
+    <a id="pane-link" class="pane-link" target="_blank" rel="noopener noreferrer" hidden>🔗 打開登入網頁</a>
     <pre id="pane-output" class="pane-output" tabindex="0"></pre>
     <div class="pane-controls">
       <div id="pane-answer" class="answer-row">

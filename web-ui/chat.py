@@ -30,18 +30,29 @@ AGENTS = {
     "claude": {"name": "Claude", "login": "claude"},
     "codex": {"name": "ChatGPT", "login": "codex login"},
     "grok": {"name": "Grok", "login": "grok login"},
-    "gemini": {"name": "Gemini", "login": "gemini"},
+    # Google's Antigravity CLI replaced Gemini CLI for personal accounts.
+    "agy": {"name": "Gemini", "login": "agy"},
 }
+
+# Rooms saved before Gemini moved to Antigravity CLI name the member "gemini".
+LEGACY_KINDS = {"gemini": "agy"}
+
+# Tools whose read-only mode is only a request in the prompt.
+PROMPT_ONLY_READ_ONLY = {"agy"}
+# Tools that pick their own session id instead of accepting one.
+OWN_SESSION_IDS = {"agy"}
+# Antigravity waits for a browser sign-in when it has no saved login.
+AGY_AUTH_PROMPT = "Authentication required"
 
 # Leader mode: one member plans, assigns work with "@Name: task" lines, reviews
 # the reports and either assigns again or sums up, at most LEADER_ROUNDS times.
 LEADER_ROUNDS = 3
 MAX_ASSIGNMENTS = 6
-NAME_TO_KIND = {"claude": "claude", "chatgpt": "codex", "codex": "codex", "gpt": "codex", "grok": "grok", "gemini": "gemini"}
+NAME_TO_KIND = {"claude": "claude", "chatgpt": "codex", "codex": "codex", "gpt": "codex", "grok": "grok", "gemini": "agy", "agy": "agy"}
 ASSIGN_LINE = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?[@＠]\s*([A-Za-z]+)\s*[:：]\s*(.+?)\s*$")
 
 # "@Claude", "@chatgpt", "＠grok" anywhere in a user's message, also right before Chinese text.
-MENTION = re.compile(r"[@＠](claude|chatgpt|codex|gpt|grok|gemini)(?![A-Za-z])", re.IGNORECASE)
+MENTION = re.compile(r"[@＠](claude|chatgpt|codex|gpt|grok|gemini|agy)(?![A-Za-z])", re.IGNORECASE)
 
 MAX_CONTEXT_MESSAGES = 30
 MAX_CONTEXT_CHARS = 24000
@@ -64,6 +75,24 @@ def default_data_dir() -> Path:
         return mac
     base = os.environ.get("XDG_DATA_HOME") or str(Path.home() / ".local" / "share")
     return Path(base) / "herdr-web"
+
+
+def migrate_room(data: dict) -> None:
+    """Rename members of older rooms; their old tool sessions cannot be resumed."""
+    for old, new in LEGACY_KINDS.items():
+        data["members"] = [new if member == old else member for member in data.get("members", [])]
+        if data.get("leader") == old:
+            data["leader"] = new
+        data.get("sessions", {}).pop(old, None)
+        seen = data.get("seen", {})
+        if old in seen:
+            seen[new] = seen.pop(old)
+        for message in data.get("messages", []):
+            if message.get("from") == old:
+                message["from"] = new
+            quoted = message.get("reply_to")
+            if isinstance(quoted, dict) and quoted.get("from") == old:
+                quoted["from"] = new
 
 
 def now() -> float:
@@ -92,12 +121,15 @@ def build_command(kind: str, exe: str, prompt: str, session: str | None, new_ses
         command += ["--permission-mode", "acceptEdits" if allow_edits else "default"]
         command += ["--resume", session] if session else ["--session-id", new_session]
         return command
-    if kind == "gemini":
-        # --skip-trust: the user picked this folder for the room, and an untrusted
-        # folder would silently reset the approval mode.
-        command = [exe, "-p", prompt, "-o", "stream-json", "--skip-trust"]
-        command += ["--approval-mode", "auto_edit" if allow_edits else "default"]
-        command += ["--resume", session] if session else ["--session-id", new_session]
+    if kind == "agy":
+        # Antigravity always lets the agent write inside its workspace and has no
+        # read-only mode (headless plan mode approves its own plan), so read-only
+        # rooms rely on the prompt; shell commands stay soft-denied either way.
+        command = [exe, "-p", prompt, "--output-format", "stream-json", "--print-timeout", "0s"]
+        if allow_edits:
+            command += ["--mode", "accept-edits"]
+        if session:
+            command += ["--conversation", session]
         return command
     if kind == "codex":
         sandbox = f'sandbox_mode="{"workspace-write" if allow_edits else "read-only"}"'
@@ -160,7 +192,7 @@ class TurnParser:
         self.session: str | None = None
         self.error: str | None = None
         self.finished = False
-        self._gemini_break = False
+        self._step: object = None
 
     @property
     def text(self) -> str:
@@ -179,37 +211,43 @@ class TurnParser:
             return False
         if self.kind == "codex":
             return self._feed_codex(event)
-        if self.kind == "gemini":
-            return self._feed_gemini(event)
+        if self.kind == "agy":
+            return self._feed_agy(event)
         return self._feed_messages(event)
 
-    def _feed_gemini(self, event: dict) -> bool:
-        kind = event.get("type")
+    def _feed_agy(self, event: dict) -> bool:
+        kind = event.get("event")
         if kind == "init":
-            self.session = event.get("session_id") or self.session
+            self.session = event.get("conversation_id") or self.session
             return False
-        if kind == "message" and event.get("role") == "assistant" and event.get("content"):
-            # Gemini streams the reply in pieces; join pieces of one reply,
-            # but start a new paragraph after a tool call.
-            if event.get("delta") and self.texts and not self._gemini_break:
-                self.texts[-1] += str(event["content"])
-            else:
-                self.texts.append(str(event["content"]))
-            self._gemini_break = False
-            return True
-        if kind == "tool_use":
-            self.activity.append(describe_tool(str(event.get("tool_name", "")), event.get("parameters")))
-            self._gemini_break = True
-            return True
-        if kind == "error":
-            if event.get("severity", "error") == "error":
-                self.error = str(event.get("message") or "error")
+        if kind == "step_update":
+            if self.session and event.get("conversation_id") not in (None, self.session):
+                return False  # a subagent's own conversation
+            step = event.get("step_index")
+            step_type = event.get("step_type")
+            if step_type == "agent_response" and event.get("text_delta"):
+                # Text arrives in pieces; each response step is one paragraph.
+                if self.texts and step == self._step:
+                    self.texts[-1] += str(event["text_delta"])
+                else:
+                    self.texts.append(str(event["text_delta"]))
+                self._step = step
+                return True
+            if step_type == "tool" and step != self._step:
+                info = event.get("tool_info") or {}
+                self.activity.append(describe_tool(str(event.get("tool_name") or info.get("name") or ""), info.get("parameters")))
+                self._step = step
                 return True
             return False
         if kind == "result":
             self.finished = True
-            if event.get("status") == "error" and not self.error:
-                self.error = str((event.get("error") or {}).get("message") or "Gemini 回報錯誤")
+            result = event.get("result") or {}
+            self.session = result.get("conversation_id") or self.session
+            if result.get("status") in ("SUCCESS", "WAITING"):
+                if not self.text and result.get("response"):
+                    self.texts.append(str(result["response"]))
+            elif not self.error:
+                self.error = str(result.get("error") or result.get("status") or "Gemini 回報錯誤")
             return True
         return False
 
@@ -407,6 +445,7 @@ class ChatManager:
             except (OSError, json.JSONDecodeError) as exc:
                 log.warning("skipping unreadable room %s: %s", path, exc)
                 continue
+            migrate_room(data)
             for message in data.get("messages", []):
                 if message.get("status") in ("running", "queued"):
                     message["status"] = "error"
@@ -699,6 +738,8 @@ class ChatManager:
             )
         if transcript:
             parts.append(("你上次發言後聊天室的新訊息：\n\n" if not first else "目前的對話：\n\n") + transcript)
+        if kind in PROMPT_ONLY_READ_ONLY and not allow:
+            parts.append("（提醒：這個聊天室目前是唯讀模式，不要建立、修改或刪除任何檔案。）")
         parts.append(f"（主持人）{note}" if note else f"請以 {name} 的身分回覆上面最新的訊息。")
         return "\n\n".join(parts)
 
@@ -738,7 +779,15 @@ class ChatManager:
             start_new_session=True,
         )
         stderr_tail: list[str] = []
-        drain = threading.Thread(target=_drain, args=(process.stderr, stderr_tail), daemon=True)
+        needs_login = threading.Event()
+
+        def on_stderr(line: str) -> None:
+            # Antigravity would sit waiting for a browser sign-in nobody sees.
+            if kind == "agy" and AGY_AUTH_PROMPT in line and not needs_login.is_set():
+                needs_login.set()
+                _terminate(process)
+
+        drain = threading.Thread(target=_drain, args=(process.stderr, stderr_tail, on_stderr), daemon=True)
         drain.start()
         with room.lock:
             room.process = process
@@ -777,7 +826,9 @@ class ChatManager:
             message["text"] = parser.text
             message["activity"] = parser.activity[-MAX_ACTIVITY:]
             error = parser.error
-            if timed_out.is_set():
+            if needs_login.is_set():
+                error = f"{AGENTS[kind]['name']} 還沒登入（authentication required）。"
+            elif timed_out.is_set():
                 error = f"超過 {TURN_TIMEOUT_SECONDS // 60} 分鐘沒有完成，已自動停止。可能是在等待某個權限確認。"
             if not error and not parser.text and not stopped:
                 # Exited without a reply (for example a login problem printed to stderr).
@@ -792,14 +843,16 @@ class ChatManager:
                 message["error_kind"] = "login" if LOGIN_HINTS.search(error) else "failed"
             else:
                 message["status"] = "done"
-                if parser.session or not session:
+                if parser.session or not (session or kind in OWN_SESSION_IDS):
                     room.data["sessions"][kind] = parser.session or new_session
                 room.data["seen"][kind] = upto + 1
             room.bump(message)
 
 
-def _drain(stream, tail: list[str]) -> None:
+def _drain(stream, tail: list[str], on_line=None) -> None:
     for line in stream:
+        if on_line:
+            on_line(line)
         tail.append(line)
         if len(tail) > 40:
             del tail[:20]

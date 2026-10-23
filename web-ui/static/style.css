@@ -648,3 +648,7 @@ button.chip.target.active { opacity: 1; border-color: var(--accent); color: var(
 .composer-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 0; }
 .composer-status:empty { display: none; }
 #form-dialog-text { white-space: pre-line; }
+.app-version { font-size: 0.75em; font-weight: 400; color: var(--muted); }
+.login-card .app-version { text-align: center; margin: 0; }
+.pane-link { display: block; margin: 0 0 8px; padding: 10px 14px; border-radius: 10px; background: var(--accent); color: #fff; font-weight: 600; text-align: center; text-decoration: none; }
+.pane-link[hidden] { display: none; }

@@ -27,7 +27,7 @@
 - Python 3.9 以上；3.11 以上才能在存檔前檢查 TOML 語法
 - 已安裝 herdr，並有 herdr server 在執行（網頁上也有「啟動 herdr server」按鈕）
 
-## 聊天室（讓三個 AI 一起工作）
+## 聊天室（讓好幾個 AI 一起工作）
 
 「聊天」分頁是預設首頁，用起來像群組聊天：
 
@@ -99,17 +99,21 @@ cd herdr
 ## 準備 Claude、ChatGPT、Grok、Gemini 的 agent
 
 herdr 不直接連 AI 網站，而是在 pane 裡執行各家的命令列 agent。網頁的「啟動 agent」選單
-預設把這三個排在最前面（可用 `--preferred-agents` 調整）：
+預設把這四個排在最前面（可用 `--preferred-agents` 調整）：
 
 | 你的訂閱 | 命令列工具 | herdr 名稱 | 一鍵安裝會執行 |
 | --- | --- | --- | --- |
 | Claude（Pro / Max） | Claude Code | `claude` | 官方安裝程式 `curl -fsSL https://claude.ai/install.sh \| bash` |
 | ChatGPT（Plus / Pro） | Codex | `codex` | `install_codex.py`：從 npm registry 下載 OpenAI 官方的原生執行檔套件，驗證 SHA-512 後裝到 `~/.local/bin/codex`，不需要 Node.js |
 | Grok | Grok Build | `grok` | 官方安裝程式 `curl -fsSL https://x.ai/cli/install.sh \| bash` |
-| Gemini（免費 API 金鑰，Google 已不開放個人帳號登入 CLI） | Gemini CLI | `gemini` | `install_gemini.py`：沒有 Node.js 時從 nodejs.org 下載官方 LTS 版（驗證 SHA-256）放進私人資料夾，再用它安裝 `@google/gemini-cli`，並建立 `~/.local/bin/gemini` 啟動檔 |
+| Gemini（Google 帳號，免費或 Google AI Pro / Ultra） | Antigravity CLI | `agy` | 官方安裝程式 `curl -fsSL https://antigravity.google/cli/install.sh \| bash` |
 
 首頁卡片顯示「還沒安裝」時點一下就能安裝。這些命令列工具和各家的桌面版 App 是不同的程式，
 登入狀態和對話紀錄不共用，但用的是同一個帳號和訂閱；第一次使用時登入一次即可。
+
+Google 在 2026 年 6 月 18 日把個人帳號（免費版和 Google AI Pro / Ultra）的 Gemini CLI 換成了
+Antigravity CLI，所以聊天室裡的「Gemini」用的是 `agy`。Antigravity 一定允許 AI 修改專案資料夾裡的檔案，
+沒有唯讀模式：唯讀的聊天室只會在每次發言前提醒它不要改檔案，它想執行的指令預設不會被執行。
 
 建議再安裝 herdr 的整合，讓狀態偵測和 session 還原更準確：
 
@@ -140,7 +144,7 @@ HERDR_WEB_PASSWORD='換成你的密碼' python3 web-ui/herdr_web.py --start-serv
 | `--secure-cookie` | 前面有 HTTPS 反向代理時加上 |
 | `--start-server` | herdr server 沒在跑就先啟動它 |
 | `--open` | 啟動後打開瀏覽器；密碼是自動產生時會自動登入 |
-| `--preferred-agents` | 選單最前面的 agent，預設 `claude,codex,grok,gemini` |
+| `--preferred-agents` | 選單最前面的 agent，預設 `claude,codex,grok,agy` |
 | `--data-dir` | 聊天室紀錄存放的位置 |
 
 為了安全，herdr-web 預設只聽 `127.0.0.1`。如果要聽公開位址又沒有 TLS，程式會拒絕啟動，
