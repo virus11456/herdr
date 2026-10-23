@@ -31,7 +31,7 @@
 
 「聊天」分頁是預設首頁，用起來像群組聊天：
 
-1. 按「＋ 新聊天室」，取名字、勾選要邀請的 AI（Claude、ChatGPT、Grok），再選一個專案資料夾。
+1. 按「＋ 新聊天室」，取名字、勾選要邀請的 AI（Claude、ChatGPT、Grok、Gemini），再選一個專案資料夾。
 2. 在下方輸入訊息，用「傳給：」的按鈕選擇要問誰。選多個時會**依序**回覆，
    後面的 AI 看得到前面的回覆，可以接著補充或修正。
 3. 輸入框下方有一排常用按鈕：「💬 讓他們討論一輪」「🔍 互相檢查」「📝 總結」「📋 列待辦」
@@ -96,7 +96,7 @@ cd herdr
 
 換 port：`./web-ui/start.sh --port 9000`。
 
-## 準備 Claude、ChatGPT、Grok 的 agent
+## 準備 Claude、ChatGPT、Grok、Gemini 的 agent
 
 herdr 不直接連 AI 網站，而是在 pane 裡執行各家的命令列 agent。網頁的「啟動 agent」選單
 預設把這三個排在最前面（可用 `--preferred-agents` 調整）：
@@ -106,7 +106,7 @@ herdr 不直接連 AI 網站，而是在 pane 裡執行各家的命令列 agent�
 | Claude（Pro / Max） | Claude Code | `claude` | 官方安裝程式 `curl -fsSL https://claude.ai/install.sh \| bash` |
 | ChatGPT（Plus / Pro） | Codex | `codex` | `install_codex.py`：從 npm registry 下載 OpenAI 官方的原生執行檔套件，驗證 SHA-512 後裝到 `~/.local/bin/codex`，不需要 Node.js |
 | Grok | Grok Build | `grok` | 官方安裝程式 `curl -fsSL https://x.ai/cli/install.sh \| bash` |
-| Gemini（Google 帳號） | Gemini CLI | `gemini` | `install_gemini.py`：沒有 Node.js 時從 nodejs.org 下載官方 LTS 版（驗證 SHA-256）放進私人資料夾，再用它安裝 `@google/gemini-cli`，並建立 `~/.local/bin/gemini` 啟動檔 |
+| Gemini（免費 API 金鑰，Google 已不開放個人帳號登入 CLI） | Gemini CLI | `gemini` | `install_gemini.py`：沒有 Node.js 時從 nodejs.org 下載官方 LTS 版（驗證 SHA-256）放進私人資料夾，再用它安裝 `@google/gemini-cli`，並建立 `~/.local/bin/gemini` 啟動檔 |
 
 首頁卡片顯示「還沒安裝」時點一下就能安裝。這些命令列工具和各家的桌面版 App 是不同的程式，
 登入狀態和對話紀錄不共用，但用的是同一個帳號和訂閱；第一次使用時登入一次即可。

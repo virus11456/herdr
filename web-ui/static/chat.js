@@ -498,7 +498,28 @@ function errorBox(message, tool) {
   return box;
 }
 
+const GEMINI_KEY_URL = "https://aistudio.google.com/app/apikey";
+
+/* Google no longer lets personal Google accounts sign in to Gemini CLI,
+   so walk the user through the free API key route instead. */
+async function explainGeminiKey() {
+  const ok = await openForm({
+    title: "Gemini 要用「API 金鑰」登入",
+    text:
+      "Google 已經不讓個人 Google 帳號直接登入 Gemini CLI（選 1 會出現「This client is no longer supported」）。\n\n" +
+      "改用免費的 API 金鑰：\n" +
+      "1. 按下面的按鈕，打開 Google AI Studio，用你的 Google 帳號登入，按「Create API key」，再按複製。\n" +
+      "2. 回到這裡的 Gemini 視窗，用 ↓ 選「2. Use Gemini API Key」，按 Enter。\n" +
+      "3. 把金鑰貼到下方的輸入框送出，看到可以打字就成功了。\n\n" +
+      "金鑰只存在你這台 Mac 的鑰匙圈裡。免費額度聊天夠用，跟你的 Gemini 訂閱是分開算的。",
+    okText: "打開取得金鑰的網頁",
+    cancelText: "我已經有金鑰了",
+  });
+  if (ok) window.open(GEMINI_KEY_URL, "_blank", "noopener");
+}
+
 async function startLogin(kind) {
+  if (kind === "gemini") await explainGeminiKey();
   const status = toolStatus(kind);
   const tool = chatTool(kind);
   const command = status?.login || tool.command;
@@ -644,7 +665,7 @@ async function stopRoom() {
 async function setAllowEdits(event) {
   if (!chat.room) return;
   const allow = event.target.checked;
-  if (allow && !(await confirmAction("允許 AI 修改檔案？", `Claude、ChatGPT、Grok 之後可以直接修改「${chat.room.folder}」裡的檔案。建議先備份重要檔案。`, "允許", false))) {
+  if (allow && !(await confirmAction("允許 AI 修改檔案？", `AI 們之後可以直接修改「${chat.room.folder}」裡的檔案。建議先備份重要檔案。`, "允許", false))) {
     event.target.checked = false;
     return;
   }

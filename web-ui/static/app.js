@@ -4,7 +4,7 @@
 const STATUS_LABELS = {
   working: "正在工作…",
   blocked: "等你回答問題",
-  done: "做完了，可以看結果",
+  done: "做完了，有新結果",
   idle: "準備好了，等你下指令",
   unknown: "終端機",
 };
@@ -584,6 +584,9 @@ function renderSummary() {
     if (!counts[status]) continue;
     summary.append(h("span", { class: "chip static" }, h("span", { class: `dot ${status}` }), `${STATUS_LABELS[status]} ${counts[status]}`));
   }
+  if (counts.done) {
+    summary.append(h("button", { type: "button", class: "chip", onclick: markAllSeen, title: "把「有新結果」都標成看過，狀態就會統一成「準備好了」" }, "✓ 全部看過了"));
+  }
   const blocked = counts.blocked || 0;
   document.title = blocked ? `(${blocked}) herdr 控制台` : "herdr 控制台";
 }
@@ -774,9 +777,28 @@ function renderPaneHeader(pane) {
   $("pane-attention-text").textContent = `${name || "程式"} 在等你回覆。看看畫面最後的問題，用下方的按鈕回答，或直接輸入文字。`;
 }
 
+/* herdr shows "done" until someone looks at the pane; focusing it marks it seen. */
+function markSeen(paneId) {
+  return call("pane.focus", { pane_id: paneId }).catch(() => undefined);
+}
+
+let markingAllSeen = false;
+async function markAllSeen() {
+  if (markingAllSeen) return;
+  markingAllSeen = true;
+  try {
+    const done = (state.snapshot?.panes || []).filter((pane) => pane.agent && pane.agent_status === "done");
+    for (const pane of done) await markSeen(pane.pane_id);
+    toast("好了，狀態都統一了");
+  } finally {
+    markingAllSeen = false;
+  }
+}
+
 function openPane(paneId) {
   state.openPaneId = paneId;
   const pane = paneById(paneId);
+  if (pane?.agent_status === "done") markSeen(paneId);
   state.openPaneSeen = Boolean(pane);
   if (pane) renderPaneHeader(pane);
   else {

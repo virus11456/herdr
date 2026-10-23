@@ -50,7 +50,7 @@ MAX_ACTIVITY = 200
 TURN_TIMEOUT_SECONDS = 30 * 60
 LOGIN_HINTS = re.compile(
     r"not signed in|not logged in|please run /login|invalid api key|401 unauthorized|missing bearer|"
-    r"authentication|auth method|log in|login required",
+    r"authentication|auth method|log in|login required|no longer supported",
     re.IGNORECASE,
 )
 
@@ -430,8 +430,10 @@ class ChatManager:
     # rooms
 
     def list(self) -> list[dict]:
-        rooms = [room.meta() for room in self.rooms.values()]
-        for meta, room in zip(rooms, self.rooms.values()):
+        rooms = []
+        for room in list(self.rooms.values()):
+            meta = room.meta()
+            rooms.append(meta)
             with room.lock:
                 last = room.data["messages"][-1] if room.data["messages"] else None
             preview = re.sub(r"[*`#>]+", "", " ".join(last["text"].split()))[:80] if last else ""
