@@ -27,12 +27,53 @@
 - Python 3.9 以上；3.11 以上才能在存檔前檢查 TOML 語法
 - 已安裝 herdr，並有 herdr server 在執行（網頁上也有「啟動 herdr server」按鈕）
 
-## 在本機快速試用
+## 在自己電腦上使用（最簡單）
 
 ```bash
-herdr server &                      # 或直接開 herdr 的終端機介面
-HERDR_WEB_PASSWORD='換成你的密碼' python3 web-ui/herdr_web.py
-# 打開 http://127.0.0.1:8787
+git clone https://github.com/virus11456/herdr
+cd herdr
+./web-ui/start.sh
+```
+
+`start.sh` 會：
+
+1. 找到 herdr（`PATH` 或 `~/.local/bin/herdr`）和 python3，缺了會告訴你怎麼裝；
+2. herdr server 沒在跑就自動啟動（會還原上次的 workspace）；
+3. 開一個只有本機連得到的網頁 `http://127.0.0.1:8787`，並自動打開瀏覽器、自動登入。
+
+每次啟動都會產生新的隨機密碼，並透過網址的 `#` 片段交給瀏覽器自動登入。這段不會傳到伺服器，
+登入後也會馬上從網址列清掉。之後要在別的分頁重新登入，就用終端機上印出的密碼。
+
+按 `Ctrl+C` 只會關掉網頁控制台，herdr 和裡面的 agent 會繼續執行。下次再跑 `./web-ui/start.sh` 就能接回去。
+你也可以同時在終端機執行 `herdr`，網頁和終端機看到的是同一個工作環境。
+
+換 port：`./web-ui/start.sh --port 9000`。
+
+## 準備 Claude、ChatGPT、Grok 的 agent
+
+herdr 不直接連 AI 網站，而是在 pane 裡執行各家的命令列 agent。網頁的「啟動 agent」選單
+預設把這三個排在最前面（可用 `--preferred-agents` 調整）：
+
+| 你的訂閱 | 要安裝的 CLI | herdr 名稱 | 安裝與登入 |
+| --- | --- | --- | --- |
+| Claude（Pro / Max） | Claude Code | `claude` | `npm install -g @anthropic-ai/claude-code`，執行 `claude` 後用 Claude 帳號登入 |
+| ChatGPT（Plus / Pro） | Codex CLI | `codex` | `npm install -g @openai/codex`，執行 `codex` 後選「Sign in with ChatGPT」 |
+| Grok | Grok CLI | `grok` | 依 xAI 官方說明安裝，執行 `grok` 登入一次 |
+
+每個 CLI 先在一般終端機執行並登入一次，之後在 herdr 裡就能直接啟動。
+
+建議再安裝 herdr 的整合，讓狀態偵測和 session 還原更準確：
+
+```bash
+herdr integration install claude
+herdr integration install codex
+herdr integration install grok    # 需要已經有 ~/.grok 設定資料夾
+```
+
+## 手動啟動與參數
+
+```bash
+HERDR_WEB_PASSWORD='換成你的密碼' python3 web-ui/herdr_web.py --start-server
 ```
 
 沒有設定 `HERDR_WEB_PASSWORD` 時，程式會隨機產生一組密碼並印在終端機上。
@@ -48,11 +89,14 @@ HERDR_WEB_PASSWORD='換成你的密碼' python3 web-ui/herdr_web.py
 | `--password-file PATH` | 從檔案讀密碼（取代環境變數） |
 | `--tls-cert` / `--tls-key` | 直接提供 HTTPS |
 | `--secure-cookie` | 前面有 HTTPS 反向代理時加上 |
+| `--start-server` | herdr server 沒在跑就先啟動它 |
+| `--open` | 啟動後打開瀏覽器；密碼是自動產生時會自動登入 |
+| `--preferred-agents` | 選單最前面的 agent，預設 `claude,codex,grok` |
 
 為了安全，herdr-web 預設只聽 `127.0.0.1`。如果要聽公開位址又沒有 TLS，程式會拒絕啟動，
 因為密碼會以明文在網路上傳送。
 
-## 部署到 VPS，從手機連線
+## 之後想改放到 VPS，從手機連線
 
 這個網頁等於可以在你的 VPS 上執行任意指令，**請不要把它用純 HTTP 直接開放到網際網路**。
 下面三種方式擇一：

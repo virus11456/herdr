@@ -253,6 +253,36 @@ class StaticTests(BridgeTestCase):
         conn.close()
 
 
+class StartServerTests(BridgeTestCase):
+    def test_running_server_is_not_restarted(self) -> None:
+        with mock.patch.object(self.app, "start_herdr_server") as start:
+            self.assertTrue(self.app.ensure_herdr_running(wait_seconds=1))
+        start.assert_not_called()
+
+    def test_missing_server_is_started(self) -> None:
+        self.fake.shutdown()
+        self.fake.server_close()
+        os.unlink(self.socket_path)
+
+        def start() -> None:
+            self.fake = FakeHerdr(str(self.socket_path))
+            threading.Thread(target=self.fake.serve_forever, daemon=True).start()
+
+        with mock.patch.object(self.app, "start_herdr_server", side_effect=start) as patched:
+            self.assertTrue(self.app.ensure_herdr_running(wait_seconds=3))
+        patched.assert_called_once()
+
+    def test_server_that_never_comes_up(self) -> None:
+        self.fake.shutdown()
+        self.fake.server_close()
+        os.unlink(self.socket_path)
+        # tearDown shuts self.fake down, so keep a served placeholder on another path.
+        self.fake = FakeHerdr(str(Path(self.tmp.name) / "unused.sock"))
+        threading.Thread(target=self.fake.serve_forever, daemon=True).start()
+        with mock.patch.object(self.app, "start_herdr_server"):
+            self.assertFalse(self.app.ensure_herdr_running(wait_seconds=0.5))
+
+
 class OptionTests(unittest.TestCase):
     def test_plain_http_on_public_address_refused(self) -> None:
         with mock.patch("sys.stderr"), self.assertRaises(SystemExit):
@@ -261,6 +291,11 @@ class OptionTests(unittest.TestCase):
     def test_plain_http_on_public_address_allowed_with_flag(self) -> None:
         args = herdr_web.parse_args(["--host", "0.0.0.0", "--allow-plain-http-remote"])
         self.assertEqual(args.host, "0.0.0.0")
+
+    def test_preferred_agents_listed_first(self) -> None:
+        ordered, chosen = herdr_web.order_agent_kinds(["pi", "claude", "codex", "gemini", "grok"], ["grok", "claude", "nope"])
+        self.assertEqual(chosen, ["grok", "claude"])
+        self.assertEqual(ordered, ["grok", "claude", "pi", "codex", "gemini"])
 
     def test_loopback_hosts(self) -> None:
         self.assertTrue(herdr_web.is_loopback("127.0.0.1"))

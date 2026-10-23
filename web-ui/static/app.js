@@ -8,6 +8,15 @@ const STATUS_LABELS = {
   unknown: "未偵測",
 };
 const STATUS_ORDER = ["blocked", "working", "done", "idle"];
+const AGENT_LABELS = {
+  claude: "Claude Code（Claude 訂閱）",
+  codex: "Codex（ChatGPT 訂閱）",
+  grok: "Grok CLI（Grok 訂閱）",
+  gemini: "Gemini CLI",
+  copilot: "GitHub Copilot CLI",
+  cursor: "Cursor Agent CLI",
+  opencode: "OpenCode",
+};
 const OUTPUT_POLL_MS = 1500;
 const OUTPUT_LINES = 400;
 
@@ -15,7 +24,7 @@ const state = {
   online: false,
   error: null,
   snapshot: null,
-  meta: { agent_kinds: [] },
+  meta: { agent_kinds: [], preferred_agents: [] },
   view: "dashboard",
   openPaneId: null,
   lastStatuses: new Map(),
@@ -123,11 +132,20 @@ function openForm({ title, text = "", fields = [], okText = "確定", danger = f
     container.append(h("label", { for: id, text: field.label }));
     let input;
     if (field.type === "select") {
-      input = h(
-        "select",
-        { id, name: field.name },
-        field.options.map((opt) => h("option", { value: opt.value, text: opt.label, selected: opt.value === field.value })),
-      );
+      input = h("select", { id, name: field.name });
+      const groups = new Map();
+      for (const opt of field.options) {
+        const option = h("option", { value: opt.value, text: opt.label, selected: opt.value === field.value });
+        if (!opt.group) {
+          input.append(option);
+          continue;
+        }
+        if (!groups.has(opt.group)) {
+          groups.set(opt.group, h("optgroup", { label: opt.group }));
+          input.append(groups.get(opt.group));
+        }
+        groups.get(opt.group).append(option);
+      }
     } else {
       input = h("input", {
         id,
@@ -161,6 +179,15 @@ function openForm({ title, text = "", fields = [], okText = "確定", danger = f
 
 async function confirmAction(title, text, okText) {
   return (await openForm({ title, text, okText, danger: true })) !== null;
+}
+
+function agentOptions() {
+  const preferred = new Set(state.meta.preferred_agents || []);
+  return (state.meta.agent_kinds || []).map((kind) => ({
+    value: kind,
+    label: AGENT_LABELS[kind] || kind,
+    group: preferred.size ? (preferred.has(kind) ? "你的訂閱" : "其他 agent") : undefined,
+  }));
 }
 
 /* ---------- snapshot helpers ---------- */
@@ -355,7 +382,6 @@ function applyState(payload) {
 /* ---------- workspace / tab actions ---------- */
 
 async function createWorkspace() {
-  const kinds = state.meta.agent_kinds || [];
   const values = await openForm({
     title: "新 workspace",
     fields: [
@@ -366,7 +392,7 @@ async function createWorkspace() {
         label: "建立後啟動 agent",
         type: "select",
         value: "",
-        options: [{ value: "", label: "不要，只開 shell" }, ...kinds.map((kind) => ({ value: kind, label: kind }))],
+        options: [{ value: "", label: "不要，只開 shell" }, ...agentOptions()],
       },
     ],
     okText: "建立",
@@ -517,13 +543,13 @@ async function startAgentInPane(paneId, kind, name, freshPane) {
 
 async function startAgent() {
   const paneId = state.openPaneId;
-  const kinds = state.meta.agent_kinds || [];
+  const options = agentOptions();
   if (!paneId) return;
   const values = await openForm({
     title: "在這個 pane 啟動 agent",
     text: "pane 必須停在 shell 提示字元，而且 VPS 上要先安裝好該 agent 的 CLI。",
     fields: [
-      { name: "kind", label: "Agent 種類", type: "select", value: kinds[0], options: kinds.map((kind) => ({ value: kind, label: kind })) },
+      { name: "kind", label: "Agent 種類", type: "select", value: options[0]?.value, options },
       { name: "name", label: "名稱", placeholder: "例如 reviewer" },
     ],
     okText: "啟動",
@@ -767,12 +793,29 @@ function bind() {
   });
 }
 
+function takeLoginFromUrl() {
+  // herdr-web --open passes a one-run password in the fragment; never keep it in history.
+  const params = new URLSearchParams(location.hash.slice(1));
+  const password = params.get("login");
+  if (password !== null) history.replaceState(null, "", location.pathname + location.search);
+  return password;
+}
+
 async function boot() {
   bind();
+  const urlPassword = takeLoginFromUrl();
   try {
     const session = await api("/api/session");
-    if (session.authenticated) await enterApp();
-    else showLogin();
+    if (session.authenticated) return await enterApp();
+    if (urlPassword) {
+      try {
+        await api("/api/login", { method: "POST", body: { password: urlPassword } });
+        return await enterApp();
+      } catch (err) {
+        /* stale link from an earlier run: fall back to the login form */
+      }
+    }
+    showLogin();
   } catch (err) {
     showLogin();
     $("login-error").textContent = err.message;

@@ -26,10 +26,11 @@ import sys
 import tempfile
 import threading
 import time
+import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlsplit
+from urllib.parse import quote, urlsplit
 
 try:
     import tomllib  # Python 3.11+
@@ -76,6 +77,8 @@ ALLOWED_METHODS = frozenset(
         "server.reload_config",
     }
 )
+
+DEFAULT_PREFERRED_AGENTS = "claude,codex,grok"
 
 FALLBACK_AGENT_KINDS = [
     "claude", "codex", "gemini", "opencode", "cursor", "copilot", "amp",
@@ -398,6 +401,12 @@ def detect_agent_kinds(herdr_bin: str) -> list[str]:
     return kinds or FALLBACK_AGENT_KINDS
 
 
+def order_agent_kinds(kinds: list[str], preferred: list[str]) -> tuple[list[str], list[str]]:
+    """Put the preferred kinds herdr supports first; return (ordered kinds, preferred kinds)."""
+    chosen = [kind for kind in preferred if kind in kinds]
+    return chosen + [kind for kind in kinds if kind not in chosen], chosen
+
+
 class App:
     def __init__(self, args: argparse.Namespace, password: str):
         self.args = args
@@ -406,7 +415,8 @@ class App:
         self.auth = AuthManager(password)
         config_path = Path(args.config).expanduser() if args.config else default_config_dir() / "config.toml"
         self.config = ConfigStore(config_path, args.herdr_bin)
-        self.agent_kinds = detect_agent_kinds(args.herdr_bin)
+        preferred = [kind.strip() for kind in args.preferred_agents.split(",") if kind.strip()]
+        self.agent_kinds, self.preferred_agents = order_agent_kinds(detect_agent_kinds(args.herdr_bin), preferred)
         self.secure_cookie = bool(args.tls_cert) or args.secure_cookie
 
     def start_herdr_server(self) -> None:
@@ -424,6 +434,24 @@ class App:
             )
         except OSError as exc:
             raise HerdrError("herdr_bin", f"cannot start {self.args.herdr_bin}: {exc}") from exc
+
+    def ensure_herdr_running(self, wait_seconds: float = 8.0) -> bool:
+        """Start the herdr server when nothing answers on its socket; return whether it is up."""
+        try:
+            self.client.call("ping", timeout=2)
+            return True
+        except HerdrError:
+            pass
+        self.start_herdr_server()
+        deadline = time.monotonic() + wait_seconds
+        while time.monotonic() < deadline:
+            time.sleep(0.25)
+            try:
+                self.client.call("ping", timeout=2)
+                return True
+            except HerdrError:
+                continue
+        return False
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -529,6 +557,7 @@ class Handler(BaseHTTPRequestHandler):
                     HTTPStatus.OK,
                     {
                         "agent_kinds": self.app.agent_kinds,
+                        "preferred_agents": self.app.preferred_agents,
                         "socket_path": str(self.app.client.socket_path),
                         "session": self.app.args.session,
                     },
@@ -749,6 +778,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         action="store_true",
         help="allow listening on a non-loopback address without TLS (not recommended)",
     )
+    parser.add_argument(
+        "--preferred-agents",
+        default=DEFAULT_PREFERRED_AGENTS,
+        help=f"comma-separated agent kinds listed first in the UI (default: {DEFAULT_PREFERRED_AGENTS})",
+    )
+    parser.add_argument(
+        "--start-server",
+        action="store_true",
+        help="start the herdr server first when it is not running",
+    )
+    parser.add_argument(
+        "--open",
+        action="store_true",
+        help="open the dashboard in the default browser, already logged in",
+    )
     args = parser.parse_args(argv)
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("--tls-cert and --tls-key must be given together")
@@ -766,10 +810,29 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     password, generated = load_password(args)
     app = App(args, password)
+    if args.start_server:
+        try:
+            if app.ensure_herdr_running():
+                print("herdr server is running", flush=True)
+            else:
+                print("herdr server did not start in time; the dashboard will keep retrying", flush=True)
+        except HerdrError as exc:
+            print(f"could not start herdr server: {exc.message}", flush=True)
     app.hub.start()
 
-    httpd = ThreadingHTTPServer((args.host, args.port), make_handler(app))
+    try:
+        httpd = ThreadingHTTPServer((args.host, args.port), make_handler(app))
+    except OSError as exc:
+        app.hub.stop()
+        print(
+            f"cannot listen on {args.host}:{args.port} ({exc.strerror}). "
+            "herdr-web may already be running; open it in the browser, or pick another --port.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 1
     httpd.daemon_threads = True
+    port = httpd.server_address[1]
     scheme = "http"
     if args.tls_cert:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
@@ -778,11 +841,20 @@ def main(argv: list[str] | None = None) -> int:
         httpd.socket = context.wrap_socket(httpd.socket, server_side=True)
         scheme = "https"
 
-    host_for_url = f"[{args.host}]" if ":" in args.host else args.host
-    print(f"herdr-web listening on {scheme}://{host_for_url}:{args.port}", flush=True)
+    browse_host = "127.0.0.1" if args.host in ("0.0.0.0", "::", "") else args.host
+    host_for_url = f"[{browse_host}]" if ":" in browse_host else browse_host
+    url = f"{scheme}://{host_for_url}:{port}/"
+    print(f"herdr-web listening on {url}", flush=True)
     print(f"herdr socket: {app.client.socket_path}", flush=True)
     if generated:
         print(f"generated login password (set HERDR_WEB_PASSWORD to choose one): {password}", flush=True)
+    if args.open:
+        # A per-run generated password rides in the URL fragment, which browsers
+        # never send to the server; the page logs in with it and strips it from
+        # history. A password the user chose is never put in a URL.
+        login_url = f"{url}#login={quote(password, safe='')}" if generated else url
+        if not webbrowser.open(login_url):
+            print(f"open this address to log in: {login_url}", flush=True)
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
