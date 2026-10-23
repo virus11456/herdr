@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f1115">
+  <title>herdr 控制台</title>
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <section id="login-view" class="login" hidden>
+    <form id="login-form" class="login-card">
+      <img src="icon.svg" alt="" class="login-icon">
+      <h1>herdr 控制台</h1>
+      <p class="muted">輸入啟動 herdr-web 時設定的密碼。</p>
+      <label for="login-password">密碼</label>
+      <input id="login-password" type="password" autocomplete="current-password" required>
+      <button type="submit" class="primary">登入</button>
+      <p id="login-error" class="error-text" role="alert"></p>
+    </form>
+  </section>
+
+  <section id="app-view" hidden>
+    <header class="topbar">
+      <div class="brand"><img src="icon.svg" alt="" class="brand-icon"><span>herdr</span></div>
+      <span id="conn-pill" class="pill">連線中</span>
+      <nav class="tabs" aria-label="主選單">
+        <button type="button" data-view="dashboard" class="tab active">儀表板</button>
+        <button type="button" data-view="settings" class="tab">設定</button>
+      </nav>
+      <button type="button" id="logout-btn" class="ghost small">登出</button>
+    </header>
+
+    <main>
+      <section id="dashboard-view">
+        <div id="offline-banner" class="banner" hidden>
+          <div>
+            <strong>herdr server 沒有在執行</strong>
+            <p id="offline-detail" class="muted"></p>
+          </div>
+          <button type="button" id="start-server-btn" class="primary">啟動 herdr server</button>
+        </div>
+
+        <div class="toolbar">
+          <div id="summary" class="summary" aria-live="polite"></div>
+          <button type="button" id="new-workspace-btn" class="primary">＋ 新 workspace</button>
+        </div>
+
+        <div id="workspaces" class="workspaces"></div>
+        <p id="empty-state" class="empty" hidden>還沒有 workspace。按「＋ 新 workspace」建立第一個。</p>
+      </section>
+
+      <section id="settings-view" hidden>
+        <div class="settings-head">
+          <div>
+            <h2>config.toml</h2>
+            <p class="muted">路徑：<code id="config-path"></code></p>
+          </div>
+          <div class="button-row">
+            <button type="button" id="config-validate-btn">檢查語法</button>
+            <button type="button" id="config-save-btn" class="primary">儲存並套用</button>
+            <button type="button" id="config-restore-btn">還原上一版</button>
+            <button type="button" id="config-default-btn" class="ghost">顯示預設設定</button>
+          </div>
+        </div>
+        <div id="config-status" class="config-status" role="status"></div>
+        <textarea id="config-editor" class="editor" spellcheck="false" autocapitalize="off" autocomplete="off"
+          aria-label="config.toml 內容"></textarea>
+        <details id="config-default" class="default-config">
+          <summary>herdr 預設設定（唯讀參考）</summary>
+          <div class="button-row"><button type="button" id="config-copy-default-btn" class="small">複製到編輯器下方</button></div>
+          <pre id="config-default-text"></pre>
+        </details>
+        <p class="muted small-print">
+          存檔前會先檢查 TOML 語法，並把舊版本備份成 <code>config.toml.web-backup</code>；
+          存檔後自動執行 <code>herdr server reload-config</code>。主題、側邊欄等介面設定只影響終端機裡的 herdr 畫面。
+        </p>
+      </section>
+    </main>
+  </section>
+
+  <aside id="pane-panel" class="pane-panel" hidden aria-label="Pane 詳細">
+    <header class="pane-head">
+      <button type="button" id="pane-close-btn" class="ghost small" aria-label="關閉">←</button>
+      <div class="pane-title">
+        <strong id="pane-title"></strong>
+        <span id="pane-sub" class="muted"></span>
+      </div>
+      <span id="pane-status" class="status"></span>
+    </header>
+    <pre id="pane-output" class="pane-output" tabindex="0"></pre>
+    <div class="pane-controls">
+      <form id="pane-input-form" class="pane-input">
+        <textarea id="pane-input" rows="2" placeholder="輸入文字…" aria-label="送到 pane 的文字"></textarea>
+        <button type="submit" class="primary" id="pane-send-btn">送出</button>
+      </form>
+      <label class="check"><input type="checkbox" id="pane-enter" checked> 送出後按 Enter</label>
+      <div class="keys" id="pane-keys">
+        <button type="button" data-key="enter">Enter</button>
+        <button type="button" data-key="esc">Esc</button>
+        <button type="button" data-key="ctrl+c">Ctrl+C</button>
+        <button type="button" data-key="up">↑</button>
+        <button type="button" data-key="down">↓</button>
+        <button type="button" data-key="tab">Tab</button>
+        <button type="button" data-key="shift+tab">⇧Tab</button>
+        <button type="button" data-key="y">y</button>
+        <button type="button" data-key="n">n</button>
+        <button type="button" data-key="1">1</button>
+        <button type="button" data-key="2">2</button>
+        <button type="button" data-key="3">3</button>
+      </div>
+      <div class="button-row pane-actions">
+        <button type="button" id="pane-start-agent-btn">啟動 agent</button>
+        <button type="button" id="pane-split-right-btn">向右分割</button>
+        <button type="button" id="pane-split-down-btn">向下分割</button>
+        <button type="button" id="pane-rename-btn">重新命名</button>
+        <button type="button" id="pane-kill-btn" class="danger">關閉 pane</button>
+      </div>
+    </div>
+  </aside>
+
+  <dialog id="form-dialog">
+    <form method="dialog" id="form-dialog-form">
+      <h3 id="form-dialog-title"></h3>
+      <p id="form-dialog-text" class="muted"></p>
+      <div id="form-dialog-fields"></div>
+      <div class="button-row end">
+        <button value="cancel" type="submit" class="ghost" formnovalidate>取消</button>
+        <button value="ok" type="submit" class="primary" id="form-dialog-ok">確定</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div id="toasts" class="toasts" aria-live="assertive"></div>
+</body>
+</html>

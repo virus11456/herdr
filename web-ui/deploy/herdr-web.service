@@ -1,0 +1,16 @@
+# systemd user service: browser dashboard for herdr.
+# Put the password in ~/.config/herdr-web.env as HERDR_WEB_PASSWORD=... (chmod 600).
+# Install: cp herdr-web.service ~/.config/systemd/user/ && systemctl --user enable --now herdr-web
+[Unit]
+Description=herdr web dashboard
+After=herdr.service
+Wants=herdr.service
+
+[Service]
+EnvironmentFile=%h/.config/herdr-web.env
+ExecStart=/usr/bin/python3 %h/herdr/web-ui/herdr_web.py --host 127.0.0.1 --port 8787 --herdr-bin %h/.local/bin/herdr
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target
