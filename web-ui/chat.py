@@ -32,6 +32,13 @@ AGENTS = {
     "grok": {"name": "Grok", "login": "grok login"},
 }
 
+# Leader mode: one member plans, assigns work with "@Name: task" lines, reviews
+# the reports and either assigns again or sums up, at most LEADER_ROUNDS times.
+LEADER_ROUNDS = 3
+MAX_ASSIGNMENTS = 6
+NAME_TO_KIND = {"claude": "claude", "chatgpt": "codex", "codex": "codex", "gpt": "codex", "grok": "grok"}
+ASSIGN_LINE = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?[@＠]\s*([A-Za-z]+)\s*[:：]\s*(.+?)\s*$")
+
 MAX_CONTEXT_MESSAGES = 30
 MAX_CONTEXT_CHARS = 24000
 MAX_ACTIVITY = 200
@@ -231,11 +238,43 @@ class TurnParser:
         return False
 
 
+def parse_assignments(text: str, members: list[str], leader: str) -> list[tuple[str, str]]:
+    """The "@Name: task" lines in a leader's reply, outside code blocks."""
+    assignments = []
+    in_code = False
+    for raw in text.splitlines():
+        if raw.strip().startswith("```"):
+            in_code = not in_code
+            continue
+        if in_code:
+            continue
+        match = ASSIGN_LINE.match(raw.replace("**", ""))
+        if not match:
+            continue
+        kind = NAME_TO_KIND.get(match.group(1).lower())
+        task = match.group(2).strip()
+        if kind and kind in members and kind != leader and task:
+            assignments.append((kind, task[:2000]))
+    return assignments[:MAX_ASSIGNMENTS]
+
+
 # --- rooms ------------------------------------------------------------------
 
 
-def _message(sender: str, text: str = "", status: str = "done") -> dict:
-    return {"id": uuid.uuid4().hex[:12], "from": sender, "text": text, "activity": [], "status": status, "error": None, "error_kind": None, "at": now(), "rev": 0}
+def _message(sender: str, text: str = "", status: str = "done", role: str = "reply", task: str | None = None) -> dict:
+    return {
+        "id": uuid.uuid4().hex[:12],
+        "from": sender,
+        "text": text,
+        "activity": [],
+        "status": status,
+        "error": None,
+        "error_kind": None,
+        "role": role,
+        "task": task,
+        "at": now(),
+        "rev": 0,
+    }
 
 
 class Room:
@@ -243,7 +282,8 @@ class Room:
         self.data = data
         self.lock = threading.RLock()
         self.cond = threading.Condition(self.lock)
-        self.queue: list[tuple[str, str | None]] = []
+        # Each item: kind, role, message_id, plus task/round for leader mode.
+        self.queue: list[dict] = []
         self.process: subprocess.Popen | None = None
         self.stopping = False
         self.worker: threading.Thread | None = None
@@ -264,7 +304,7 @@ class Room:
         with self.lock:
             data = {key: value for key, value in self.data.items() if key not in ("messages", "sessions", "seen")}
             data["busy"] = bool(self.queue) or self.process is not None
-            data["queued"] = [kind for kind, _ in self.queue]
+            data["queued"] = [item["kind"] for item in self.queue]
             return data
 
     def changes_since(self, rev: int) -> dict:
@@ -329,7 +369,8 @@ class ChatManager:
         for meta, room in zip(rooms, self.rooms.values()):
             with room.lock:
                 last = room.data["messages"][-1] if room.data["messages"] else None
-            meta["last"] = {"from": last["from"], "text": last["text"][:80]} if last else None
+            preview = re.sub(r"[*`#>]+", "", " ".join(last["text"].split()))[:80] if last else ""
+            meta["last"] = {"from": last["from"], "text": preview} if last else None
         return sorted(rooms, key=lambda meta: meta.get("updated_at", 0), reverse=True)
 
     def get(self, room_id: str) -> Room:
@@ -338,7 +379,7 @@ class ChatManager:
             raise ChatError("room_not_found", "找不到這個聊天室")
         return room
 
-    def create(self, name: str, folder: str, members: list[str], allow_edits: bool) -> Room:
+    def create(self, name: str, folder: str, members: list[str], allow_edits: bool, leader: str | None = None) -> Room:
         name = name.strip()[:60]
         target = Path(folder).expanduser()
         if not target.is_dir():
@@ -354,6 +395,7 @@ class ChatManager:
                 "folder": str(target.resolve()),
                 "members": members,
                 "allow_edits": bool(allow_edits),
+                "leader": leader if leader in members and len(members) > 1 else None,
                 "created_at": now(),
                 "updated_at": now(),
                 "rev": 0,
@@ -378,6 +420,11 @@ class ChatManager:
                 members = [kind for kind in changes["members"] if kind in AGENTS]
                 if members:
                     room.data["members"] = members
+            if "leader" in changes:
+                leader = changes["leader"]
+                room.data["leader"] = leader if leader in room.data["members"] and len(room.data["members"]) > 1 else None
+            if room.data.get("leader") not in room.data["members"]:
+                room.data["leader"] = None
             room.bump()
         self.save(room)
         return room
@@ -399,13 +446,16 @@ class ChatManager:
         if not text:
             raise ChatError("empty", "訊息是空的")
         with room.lock:
-            targets = [kind for kind in targets if kind in room.data["members"]]
             message = _message("user", text)
             room.data["messages"].append(message)
             room.bump(message)
-            for kind in targets:
-                room.queue.append((kind, None))
-                self._placeholder(room, kind)
+            leader = room.data.get("leader")
+            if leader:
+                # In leader mode every request goes to the leader, who assigns the work.
+                self._enqueue(room, leader, "lead", round_=1)
+            else:
+                for kind in [kind for kind in targets if kind in room.data["members"]]:
+                    self._enqueue(room, kind, "reply")
         self.save(room)
         self._ensure_worker(room)
         return message
@@ -414,10 +464,8 @@ class ChatManager:
         room = self.get(room_id)
         with room.lock:
             targets = [kind for kind in targets if kind in room.data["members"]] or list(room.data["members"])
-            note = "請看看其他成員最新的發言，說說你同意、不同意或要補充的地方；如果大家已經有共識，就提出下一步。"
             for kind in targets:
-                room.queue.append((kind, note))
-                self._placeholder(room, kind)
+                self._enqueue(room, kind, "discuss")
         self._ensure_worker(room)
 
     def stop(self, room_id: str) -> None:
@@ -433,10 +481,61 @@ class ChatManager:
         if process and process.poll() is None:
             _terminate(process)
 
-    def _placeholder(self, room: Room, kind: str) -> None:
-        message = _message(kind, status="queued")
+    def _enqueue(self, room: Room, kind: str, role: str, task: str | None = None, round_: int = 0) -> None:
+        """Queue a turn and show its placeholder bubble; caller holds the lock."""
+        message = _message(kind, status="queued", role=role, task=task)
         room.data["messages"].append(message)
         room.bump(message)
+        room.queue.append({"kind": kind, "role": role, "task": task, "round": round_, "message_id": message["id"]})
+
+    def _notice(self, room: Room, text: str) -> None:
+        message = _message("system", text)
+        room.data["messages"].append(message)
+        room.bump(message)
+
+    def turn_note(self, room: Room, item: dict) -> str | None:
+        """The instruction attached to a turn, beyond the transcript."""
+        role = item["role"]
+        if role == "discuss":
+            return "請看看其他成員最新的發言，說說你同意、不同意或要補充的地方；如果大家已經有共識，就提出下一步。"
+        leader = room.data.get("leader")
+        leader_name = AGENTS.get(leader, {}).get("name", "隊長")
+        if role == "assigned":
+            return (
+                f"隊長 {leader_name} 指派給你的任務：{item['task']}\n"
+                "請完成這個任務，然後簡短回報你做了什麼、結果如何。不需要再分派給別人。"
+            )
+        if role not in ("lead", "review"):
+            return None
+        others = [AGENTS[kind]["name"] for kind in room.data["members"] if kind != item["kind"]]
+        rules = (
+            f"你是這個聊天室的隊長，負責分工、檢查和整合。可以分派的成員：{'、'.join(others)}。"
+            "要分派時，每個任務單獨寫一行，格式是「@名字：要做的事」，例如「@ChatGPT：檢查 index.html 有沒有錯字」。"
+            "任務要寫清楚、可以獨立完成。分派完就先停下來，成員回報後你會再收到訊息。簡單的事可以自己做，不必分派。"
+        )
+        if role == "lead":
+            note = f"{rules}\n請處理使用者最新的訊息。"
+        else:
+            note = f"你分派的工作都回報了（見上面的訊息）。請檢查成果：還需要修正或補充就再分派，都完成了就向使用者總結結果。\n{rules}"
+        if item["round"] >= LEADER_ROUNDS:
+            note += "\n這是最後一輪：請直接向使用者總結目前的成果和還沒完成的部分，不要再分派。"
+        return note
+
+    def _delegate(self, room: Room, item: dict, message: dict) -> None:
+        """After a leader turn, queue the assignments it made and its review."""
+        with room.lock:
+            leader = room.data.get("leader")
+            if message["status"] != "done" or item["kind"] != leader or room.stopping:
+                return
+            assignments = parse_assignments(message["text"], room.data["members"], leader)
+            if not assignments:
+                return
+            if item["round"] >= LEADER_ROUNDS:
+                self._notice(room, f"已經分派了 {LEADER_ROUNDS} 輪，為了節省用量先停在這裡。需要的話可以再傳訊息繼續。")
+                return
+            for kind, task in assignments:
+                self._enqueue(room, kind, "assigned", task=task, round_=item["round"])
+            self._enqueue(room, leader, "review", round_=item["round"] + 1)
 
     def _ensure_worker(self, room: Room) -> None:
         with room.lock:
@@ -452,18 +551,19 @@ class ChatManager:
                 if not room.queue:
                     room.bump()
                     return
-                kind, note = room.queue.pop(0)
-                message = next(
-                    (item for item in room.data["messages"] if item["from"] == kind and item["status"] == "queued"),
-                    None,
-                )
-                if message is None:
+                item = room.queue.pop(0)
+                kind = item["kind"]
+                message = next((entry for entry in room.data["messages"] if entry["id"] == item["message_id"]), None)
+                if message is None or message["status"] != "queued":
                     continue
                 message["status"] = "running"
                 message["at"] = now()
                 room.bump(message)
+                note = self.turn_note(room, item)
             try:
                 self._run_turn(room, kind, message, note)
+                if item["role"] in ("lead", "review"):
+                    self._delegate(room, item, message)
             except Exception as exc:  # keep the worker alive for the next turn
                 log.exception("turn failed")
                 with room.lock:
@@ -480,7 +580,7 @@ class ChatManager:
             seen = data["seen"].get(kind, 0)
             history = [
                 item for item in data["messages"][seen:upto]
-                if item["from"] != kind and item["status"] == "done" and item["text"]
+                if item["from"] not in (kind, "system") and item["status"] == "done" and item["text"]
             ]
             members = [AGENTS[member]["name"] for member in data["members"]]
             name = AGENTS[kind]["name"]

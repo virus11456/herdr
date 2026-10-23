@@ -614,3 +614,10 @@ button.chip.target.active { opacity: 1; border-color: var(--accent); color: var(
   .room-back { display: inline-flex; }
   .msg.user { max-width: 92%; }
 }
+.msg.system { align-self: center; max-width: 90%; text-align: center; font-size: 0.85em; color: var(--muted); background: var(--surface-2); border-radius: 999px; padding: 4px 14px; }
+.msg-role { margin: 0; font-size: 0.85em; color: var(--muted); overflow-wrap: anywhere; }
+.rich .rich-assign { margin: 3px 0; padding: 4px 8px; border-left: 3px solid var(--accent); background: var(--surface-2); border-radius: 4px; }
+.member { display: inline-flex; align-items: center; gap: 1px; font-size: 0.8em; }
+.leader-select { display: flex; align-items: center; gap: 8px; font-size: 0.95em; }
+.leader-select select { width: auto; }
+.leader-hint { font-size: 0.9em; color: var(--muted); }

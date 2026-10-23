@@ -55,6 +55,12 @@ function renderRichText(text) {
     }
     for (const line of part.split("\n")) {
       const heading = line.match(/^#{1,4}\s+(.*)$/);
+      if (/^\s*(?:[-*•]\s*|\d+[.)]\s*)?\**[@＠]\s*(claude|chatgpt|codex|gpt|grok)\s*\**\s*[:：]/i.test(line)) {
+        const row = h("p", { class: "rich-assign" });
+        appendInline(row, line.trim());
+        root.append(row);
+        continue;
+      }
       const bullet = line.match(/^\s*(?:[-*•]|\d+[.)])\s+(.*)$/);
       if (heading) {
         root.append(h("p", { class: "rich-heading" }, h("strong", { text: heading[1] })));
@@ -122,6 +128,13 @@ async function createRoom() {
     fields: [
       { name: "name", label: "聊天室名稱", placeholder: "例如：網站改版（可留空，會用資料夾名稱）" },
       ...installed.map((kind) => ({ name: `m_${kind}`, label: `邀請 ${chatTool(kind).name}`, type: "checkbox", value: true })),
+      {
+        name: "leader",
+        label: "隊長（可選）：讓一個 AI 分派工作給其他 AI",
+        type: "select",
+        value: "",
+        options: [{ value: "", label: "不設隊長，大家一起回答" }, ...installed.map((kind) => ({ value: kind, label: `${chatTool(kind).name} 當隊長` }))],
+      },
       { name: "allow_edits", label: "允許 AI 修改資料夾裡的檔案（之後可以再改）", type: "checkbox", value: false },
     ],
     okText: "下一步：選資料夾",
@@ -132,10 +145,14 @@ async function createRoom() {
     toast("至少要邀請一個 AI", "error");
     return;
   }
+  if (values.leader && (!members.includes(values.leader) || members.length < 2)) {
+    toast("隊長要是被邀請的成員，而且至少要有兩個 AI", "error");
+    return;
+  }
   const folder = await pickFolder("聊天室要用哪個資料夾？");
   if (!folder) return;
   try {
-    const result = await api("/api/rooms", { method: "POST", body: { name: values.name, folder, members, allow_edits: values.allow_edits } });
+    const result = await api("/api/rooms", { method: "POST", body: { name: values.name, folder, members, allow_edits: values.allow_edits, leader: values.leader || null } });
     await loadRooms();
     openRoom(result.room.id);
   } catch (err) {
@@ -238,9 +255,16 @@ function renderRoomHeader() {
   members.replaceChildren();
   for (const kind of room.members) {
     const tool = chatTool(kind);
-    members.append(h("span", { class: `ai-logo tiny ${tool.tone}`, text: tool.logo, title: tool.name }));
+    const lead = room.leader === kind;
+    members.append(h("span", { class: `member${lead ? " leader" : ""}`, title: lead ? `${tool.name}（隊長）` : tool.name }, lead ? "👑" : null, h("span", { class: `ai-logo tiny ${tool.tone}`, text: tool.logo })));
   }
   $("room-allow-edits").checked = room.allow_edits;
+  const select = $("room-leader");
+  select.replaceChildren(
+    h("option", { value: "", text: "不設隊長", selected: !room.leader }),
+    ...room.members.map((kind) => h("option", { value: kind, text: chatTool(kind).name, selected: room.leader === kind })),
+  );
+  select.disabled = room.members.length < 2;
 }
 
 function loadTargets(room) {
@@ -271,7 +295,12 @@ function renderComposer() {
   }
   const chips = $("target-chips");
   chips.replaceChildren();
-  for (const kind of room.members) {
+  const leader = room.leader;
+  $("composer-targets-label").textContent = leader ? "" : "傳給：";
+  if (leader) {
+    chips.append(h("span", { class: "leader-hint" }, `👑 訊息會交給隊長 ${chatTool(leader).name}，由它分派工作給其他成員，最後向你總結。`));
+  }
+  for (const kind of leader ? [] : room.members) {
     const tool = chatTool(kind);
     const on = chat.targets.has(kind);
     chips.append(
@@ -304,7 +333,8 @@ function renderComposer() {
 
 function renderMessage(message) {
   const old = chat.elements.get(message.id);
-  const element = message.from === "user" ? userBubble(message) : agentBubble(message);
+  const element =
+    message.from === "user" ? userBubble(message) : message.from === "system" ? h("div", { class: "msg system", text: message.text }) : agentBubble(message);
   chat.elements.set(message.id, element);
   if (old) old.replaceWith(element);
   else $("messages").append(element);
@@ -339,6 +369,11 @@ function agentBubble(message) {
       h("ul", {}, activity.map((step) => h("li", { text: step }))),
     );
   }
+  const leaderName = chat.room?.leader ? chatTool(chat.room.leader).name : "隊長";
+  let role = null;
+  if (message.role === "assigned" && message.task) role = h("p", { class: "msg-role" }, `📋 ${leaderName} 指派：`, message.task);
+  else if (message.role === "review") role = h("p", { class: "msg-role" }, "🧭 檢查大家的成果，決定下一步");
+  else if (message.role === "lead") role = h("p", { class: "msg-role" }, "👑 隊長規劃分工");
   return h(
     "div",
     { class: `msg agent ${message.status}` },
@@ -347,6 +382,7 @@ function agentBubble(message) {
       "div",
       { class: "msg-col" },
       h("span", { class: "msg-name" }, tool.name, h("span", { class: "msg-time muted small", text: formatTime(message.at) })),
+      role,
       steps,
       body,
     ),
@@ -498,6 +534,11 @@ function bindChat() {
     $("room-settings").hidden = !$("room-settings").hidden;
   });
   $("room-allow-edits").addEventListener("change", setAllowEdits);
+  $("room-leader").addEventListener("change", (event) => {
+    if (!chat.room) return;
+    const leader = event.target.value || null;
+    run(() => api(`/api/rooms/${chat.room.id}/update`, { method: "POST", body: { leader } }), leader ? `${chatTool(leader).name} 現在是隊長` : "已取消隊長");
+  });
   $("room-rename-btn").addEventListener("click", renameRoom);
   $("room-open-folder-btn").addEventListener("click", openRoomFolder);
   $("room-folder").addEventListener("click", openRoomFolder);

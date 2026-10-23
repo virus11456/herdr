@@ -64,6 +64,7 @@
             </header>
             <div id="room-settings" class="room-settings" hidden>
               <label class="check"><input type="checkbox" id="room-allow-edits"> 允許 AI 修改這個資料夾裡的檔案</label>
+              <label class="leader-select">👑 隊長：<select id="room-leader" aria-label="隊長"></select></label>
               <div class="button-row">
                 <button type="button" id="room-rename-btn" class="small">重新命名</button>
                 <button type="button" id="room-open-folder-btn" class="small">打開資料夾</button>
@@ -74,7 +75,7 @@
             <div id="messages" class="messages" aria-live="polite"></div>
             <footer class="composer">
               <div class="composer-targets">
-                <span class="muted small">傳給：</span>
+                <span class="muted small" id="composer-targets-label">傳給：</span>
                 <div id="target-chips" class="chips"></div>
               </div>
               <form id="composer-form" class="composer-form">

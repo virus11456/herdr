@@ -58,7 +58,12 @@ FAKE_AGENT = textwrap.dedent(
     out({"type": "system", "subtype": "init", "session_id": session})
     out({"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "Read", "input": {"file_path": "/x/README.md"}}]}})
     name = "Claude" if kind == "claude" else "Grok"
-    out({"type": "assistant", "message": {"content": [{"type": "text", "text": name + " 看到：" + prompt[-40:]}]}})
+    text = name + " 看到：" + prompt[-40:]
+    if "你是這個聊天室的隊長" in prompt and (mode == "always_assign" or "你分派的工作都回報了" not in prompt):
+        text = "分工如下：\n1. @ChatGPT：檢查 index.html 的標題\n- **@Grok**：查三個競品網站\n```\n@Claude：這行在程式碼區塊裡，不算\n```"
+    elif "你分派的工作都回報了" in prompt:
+        text = "總結：大家都完成了"
+    out({"type": "assistant", "message": {"content": [{"type": "text", "text": text}]}})
     out({"type": "result", "subtype": "success", "is_error": False, "session_id": session, "result": "done"})
     '''
 ).replace("#!PYTHON", "#!" + sys.executable).lstrip()
@@ -240,6 +245,64 @@ class RoomTests(ChatTestCase):
         everything = room.changes_since(0)
         self.assertEqual(len(everything["messages"]), 2)
         self.assertEqual(room.changes_since(everything["rev"])["messages"], [])
+
+
+class LeaderTests(ChatTestCase):
+    def test_leader_assigns_reviews_and_sums_up(self) -> None:
+        room = self.manager.create("demo", str(self.folder), ["claude", "codex", "grok"], False, leader="claude")
+        self.manager.post(room.id, "幫我改版網站", ["codex"])  # targets are ignored in leader mode
+        self.wait_idle(room)
+        flow = [(m["from"], m["role"], m["status"]) for m in room.data["messages"]]
+        self.assertEqual(
+            flow,
+            [
+                ("user", "reply", "done"),
+                ("claude", "lead", "done"),
+                ("codex", "assigned", "done"),
+                ("grok", "assigned", "done"),
+                ("claude", "review", "done"),
+            ],
+        )
+        self.assertEqual(room.data["messages"][2]["task"], "檢查 index.html 的標題")
+        self.assertEqual(room.data["messages"][3]["task"], "查三個競品網站")
+        self.assertEqual(room.data["messages"][4]["text"], "總結：大家都完成了")
+        calls = self.calls()
+        codex_prompt = calls[1]["args"][-1]
+        self.assertIn("隊長 Claude 指派給你的任務：檢查 index.html 的標題", codex_prompt)
+        review_prompt = calls[3]["args"][calls[3]["args"].index("-p") + 1]
+        self.assertIn("[ChatGPT]：ChatGPT 看到", review_prompt)
+        self.assertIn("[Grok]：", review_prompt)
+
+    def test_leader_rounds_are_capped(self) -> None:
+        os.environ["FAKE_AGENT_MODE"] = "always_assign"
+        room = self.manager.create("demo", str(self.folder), ["claude", "codex", "grok"], False, leader="claude")
+        self.manager.post(room.id, "go", [])
+        self.wait_idle(room, timeout=30)
+        leader_turns = [m for m in room.data["messages"] if m["from"] == "claude"]
+        self.assertEqual(len(leader_turns), chat.LEADER_ROUNDS)
+        self.assertEqual(room.data["messages"][-1]["from"], "system")
+        last_prompt = [c for c in self.calls() if c["kind"] == "claude"][-1]["args"]
+        self.assertIn("這是最後一輪", last_prompt[last_prompt.index("-p") + 1])
+
+    def test_leader_validation(self) -> None:
+        room = self.manager.create("demo", str(self.folder), ["claude"], False, leader="claude")
+        self.assertIsNone(room.data["leader"])  # a leader needs someone to lead
+        room = self.manager.create("demo", str(self.folder), ["claude", "grok"], False, leader="codex")
+        self.assertIsNone(room.data["leader"])
+        self.manager.update(room.id, {"leader": "grok"})
+        self.assertEqual(room.data["leader"], "grok")
+        self.manager.update(room.id, {"members": ["claude"]})
+        self.assertIsNone(room.data["leader"])
+
+    def test_parse_assignments(self) -> None:
+        text = (
+            "計畫：\n@ChatGPT：寫測試\n2) ＠grok: 查資料\n**@Claude**：自己做\n@Gemini：不是成員\n"
+            "```\n@ChatGPT：程式碼裡的不算\n```\n- @codex：改 CSS"
+        )
+        self.assertEqual(
+            chat.parse_assignments(text, ["claude", "codex", "grok"], "claude"),
+            [("codex", "寫測試"), ("grok", "查資料"), ("codex", "改 CSS")],
+        )
 
 
 class ParserTests(unittest.TestCase):

@@ -41,7 +41,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - depends on interpreter
     tomllib = None
 
-__version__ = "0.3.1"
+__version__ = "0.4.0"
 
 log = logging.getLogger("herdr-web")
 
@@ -826,7 +826,8 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if path == "/api/rooms":
                 members = body.get("members") if isinstance(body.get("members"), list) else []
-                room = chat.create(str(body.get("name") or ""), str(body.get("folder") or ""), members, bool(body.get("allow_edits")))
+                leader = body.get("leader") if isinstance(body.get("leader"), str) else None
+                room = chat.create(str(body.get("name") or ""), str(body.get("folder") or ""), members, bool(body.get("allow_edits")), leader)
                 self.send_json(HTTPStatus.OK, {"room": room.meta()})
                 return
             match = ROOM_ACTION.match(path)
