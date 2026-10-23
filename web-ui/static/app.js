@@ -159,6 +159,8 @@ async function run(action, successMessage) {
 
 function openForm({ title, text = "", fields = [], okText = "確定", cancelText = "取消", danger = false }) {
   const dialog = $("form-dialog");
+  // A second open (for example a double click) would tangle two prompts together.
+  if (dialog.open) return Promise.resolve(null);
   const container = $("form-dialog-fields");
   $("form-dialog-title").textContent = title;
   $("form-dialog-text").textContent = text;
@@ -224,7 +226,10 @@ function openForm({ title, text = "", fields = [], okText = "確定", cancelText
     dialog.returnValue = "";
     dialog.showModal();
     const first = Object.values(inputs)[0];
+    // With no fields, a safe confirmation defaults to its main button and a
+    // dangerous one (close, delete) to cancel.
     if (first) first.focus();
+    else if (!danger) ok.focus();
   });
 }
 
@@ -510,15 +515,21 @@ async function offerInstall(kind, tool, status) {
     false,
   );
   if (!ok) return;
-  const home = (await run(() => api("/api/dirs")))?.shortcuts?.[0]?.path;
-  const result = await run(() => call("workspace.create", { label: `安裝 ${tool.name}`, cwd: home || undefined, focus: false }));
-  const paneId = result?.root_pane?.pane_id;
-  if (!paneId) return;
-  openPane(paneId);
-  await sleep(900);
-  await run(() => call("pane.send_text", { pane_id: paneId, text: status.install }));
-  await run(() => call("pane.send_keys", { pane_id: paneId, keys: ["enter"] }));
-  toast("安裝完成後，按「← 返回」再按「重新檢查」");
+  toast(`正在打開 ${tool.product} 的安裝視窗…`);
+  try {
+    if (!state.online) throw new Error("herdr 還沒啟動，請先按上方的「啟動 herdr」再試一次。");
+    const home = (await api("/api/dirs"))?.shortcuts?.[0]?.path;
+    const result = await call("workspace.create", { label: `安裝 ${tool.name}`, cwd: home || undefined, focus: false });
+    const paneId = result?.root_pane?.pane_id;
+    if (!paneId) throw new Error("herdr 沒有開出新的視窗。");
+    openPane(paneId);
+    await sleep(900);
+    await call("pane.send_text", { pane_id: paneId, text: status.install });
+    await call("pane.send_keys", { pane_id: paneId, keys: ["enter"] });
+    toast("安裝完成後，按「← 返回」再按「重新檢查」");
+  } catch (err) {
+    await inform(`沒辦法開始安裝 ${tool.product}`, `${err.message || err}。截圖給協助你的人看，或稍後再試一次。`);
+  }
 }
 
 /* ---------- home: sessions ---------- */
