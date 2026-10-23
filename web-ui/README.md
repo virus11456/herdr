@@ -27,6 +27,22 @@
 - Python 3.9 以上；3.11 以上才能在存檔前檢查 TOML 語法
 - 已安裝 herdr，並有 herdr server 在執行（網頁上也有「啟動 herdr server」按鈕）
 
+## 聊天室（讓三個 AI 一起工作）
+
+「聊天」分頁是預設首頁，用起來像群組聊天：
+
+1. 按「＋ 新聊天室」，取名字、勾選要邀請的 AI（Claude、ChatGPT、Grok），再選一個專案資料夾。
+2. 在下方輸入訊息，用「傳給：」的按鈕選擇要問誰。選多個時會**依序**回覆，
+   後面的 AI 看得到前面的回覆，可以接著補充或修正。
+3. 按「💬 讓他們討論一輪」，每個 AI 會針對最新的討論再回應一次。
+4. AI 讀檔、改檔、執行指令時，泡泡上方會用中文顯示步驟；需要時可以按「■ 停止」。
+5. 「⋯」裡可以切換「允許 AI 修改這個資料夾裡的檔案」（預設只能讀），或在 Finder 打開資料夾。
+
+背後的做法：每個 AI 都用它官方命令列工具的非互動模式執行（`claude -p`、`codex exec`、`grok -p`），
+讀取結構化輸出後畫成對話泡泡，並保留各自的對話 session。輪到某個 AI 時，會先轉述它上次發言後其他成員說了什麼。
+沒登入時，泡泡裡會出現「登入」按鈕。聊天紀錄存在 `~/Library/Application Support/herdr-web/rooms/`（Linux 是 `~/.local/share/herdr-web/rooms/`），
+刪除聊天室不會動到資料夾裡的檔案。每次回覆最多 30 分鐘，超過會自動停止。
+
 ## Mac App（DMG，不用開終端機）
 
 打開 `HerdrWeb-<版本>.dmg`，把「Herdr Web」拖到「應用程式」，之後雙擊就會：
@@ -115,6 +131,7 @@ HERDR_WEB_PASSWORD='換成你的密碼' python3 web-ui/herdr_web.py --start-serv
 | `--start-server` | herdr server 沒在跑就先啟動它 |
 | `--open` | 啟動後打開瀏覽器；密碼是自動產生時會自動登入 |
 | `--preferred-agents` | 選單最前面的 agent，預設 `claude,codex,grok` |
+| `--data-dir` | 聊天室紀錄存放的位置 |
 
 為了安全，herdr-web 預設只聽 `127.0.0.1`。如果要聽公開位址又沒有 TLS，程式會拒絕啟動，
 因為密碼會以明文在網路上傳送。

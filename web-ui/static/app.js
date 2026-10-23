@@ -39,7 +39,7 @@ const state = {
   snapshot: null,
   meta: { agent_kinds: [], preferred_agents: [] },
   tools: null,
-  view: "home",
+  view: "chat",
   openPaneId: null,
   openPaneSeen: false,
   lastStatuses: new Map(),
@@ -172,6 +172,13 @@ function openForm({ title, text = "", fields = [], okText = "確定", cancelText
   const inputs = {};
   for (const field of fields) {
     const id = `field-${field.name}`;
+    if (field.type === "checkbox") {
+      // Checkboxes sit inside their label instead of below it.
+      const box = h("input", { id, name: field.name, type: "checkbox", checked: Boolean(field.value), disabled: field.disabled || false });
+      container.append(h("label", { class: "check field-check", for: id }, box, field.label));
+      inputs[field.name] = box;
+      continue;
+    }
     container.append(h("label", { for: id, text: field.label }));
     let input;
     if (field.type === "select") {
@@ -209,7 +216,7 @@ function openForm({ title, text = "", fields = [], okText = "確定", cancelText
       dialog.removeEventListener("close", onClose);
       if (dialog.returnValue !== "ok") return resolve(null);
       const values = {};
-      for (const [name, input] of Object.entries(inputs)) values[name] = input.value.trim();
+      for (const [name, input] of Object.entries(inputs)) values[name] = input.type === "checkbox" ? input.checked : input.value.trim();
       resolve(values);
     };
     dialog.addEventListener("close", onClose);
@@ -1027,8 +1034,10 @@ function appendDefaultConfig() {
 function switchView(view) {
   state.view = view;
   for (const tab of document.querySelectorAll(".tab")) tab.classList.toggle("active", tab.dataset.view === view);
+  $("chat-view").hidden = view !== "chat";
   $("home-view").hidden = view !== "home";
   $("settings-view").hidden = view !== "settings";
+  if (view === "chat" && typeof chatShow === "function") chatShow();
   if (view === "settings") {
     renderToolList();
     renderNotifyStatus();
@@ -1089,6 +1098,7 @@ async function enterApp() {
   renderAiCards();
   connectEvents();
   loadTools(false);
+  switchView(state.view);
 }
 
 async function login(event) {
@@ -1196,4 +1206,5 @@ async function boot() {
   }
 }
 
-boot();
+// chat.js loads after this file; wait for both before starting.
+document.addEventListener("DOMContentLoaded", boot);

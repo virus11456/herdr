@@ -33,12 +33,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlsplit
 
+from chat import AGENTS as CHAT_AGENTS
+from chat import ChatError, ChatManager, default_data_dir
+
 try:
     import tomllib  # Python 3.11+
 except ModuleNotFoundError:  # pragma: no cover - depends on interpreter
     tomllib = None
 
-__version__ = "0.2.2"
+__version__ = "0.3.0"
 
 log = logging.getLogger("herdr-web")
 
@@ -108,6 +111,10 @@ LIFECYCLE_EVENTS = [
     "pane.updated", "pane.focused", "pane.moved", "pane.exited",
     "pane.agent_detected", "layout.updated",
 ]
+
+ROOM_PATH = re.compile(r"^/api/rooms/([0-9a-f]{12})$")
+ROOM_EVENTS = re.compile(r"^/api/rooms/([0-9a-f]{12})/events$")
+ROOM_ACTION = re.compile(r"^/api/rooms/([0-9a-f]{12})/(messages|discuss|stop|update|delete)$")
 
 CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -479,7 +486,8 @@ class AgentCatalog:
         agents = []
         for kind in self.kinds:
             install = AGENT_INSTALLERS.get(kind)
-            agents.append({"kind": kind, "installed": bool(found.get(kind)), "path": found.get(kind), "install": install})
+            login = CHAT_AGENTS.get(kind, {}).get("login")
+            agents.append({"kind": kind, "installed": bool(found.get(kind)), "path": found.get(kind), "install": install, "login": login})
         result = {"agents": agents, "has_npm": bool(found.get("npm")), "has_brew": bool(found.get("brew"))}
         with self._lock:
             self._cached = result
@@ -557,7 +565,18 @@ class App:
         preferred = [kind.strip() for kind in args.preferred_agents.split(",") if kind.strip()]
         self.agent_kinds, self.preferred_agents = order_agent_kinds(detect_agent_kinds(args.herdr_bin), preferred)
         self.catalog = AgentCatalog(self.preferred_agents)
+        self.chat = ChatManager(Path(args.data_dir).expanduser() if args.data_dir else default_data_dir(), self.agent_path)
         self.secure_cookie = bool(args.tls_cert) or args.secure_cookie
+
+    def agent_path(self, kind: str) -> str | None:
+        for agent in self.catalog.status()["agents"]:
+            if agent["kind"] == kind and agent["installed"]:
+                return agent["path"]
+        # It may have been installed in the last minute: look again before giving up.
+        for agent in self.catalog.status(refresh=True)["agents"]:
+            if agent["kind"] == kind and agent["installed"]:
+                return agent["path"]
+        return None
 
     def start_herdr_server(self) -> None:
         command = [self.args.herdr_bin]
@@ -704,6 +723,16 @@ class Handler(BaseHTTPRequestHandler):
                         "session": self.app.args.session,
                     },
                 )
+            elif path == "/api/rooms":
+                self.send_json(HTTPStatus.OK, {"rooms": self.app.chat.list()})
+            elif ROOM_EVENTS.match(path):
+                self.stream_room(ROOM_EVENTS.match(path).group(1), query)
+            elif ROOM_PATH.match(path):
+                try:
+                    room = self.app.chat.get(ROOM_PATH.match(path).group(1))
+                    self.send_json(HTTPStatus.OK, room.changes_since(int((query.get("since") or ["0"])[0])))
+                except (ChatError, ValueError) as exc:
+                    self.send_chat_error(exc)
             elif path == "/api/agents":
                 self.send_json(HTTPStatus.OK, self.app.catalog.status(refresh="refresh" in query))
             elif path == "/api/dirs":
@@ -755,6 +784,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             error = ConfigStore.validate(text)
             self.send_json(HTTPStatus.OK, {"valid": error is None, "error": error, "checked": tomllib is not None})
+        elif path.startswith("/api/rooms"):
+            self.handle_rooms(path, body)
+        elif path == "/api/open-folder":
+            self.handle_open_folder(body)
         elif path == "/api/dirs/create":
             parent, name = body.get("parent"), body.get("name")
             if not isinstance(parent, str) or not isinstance(name, str):
@@ -779,6 +812,87 @@ class Handler(BaseHTTPRequestHandler):
             self.send_error_json(HTTPStatus.NOT_FOUND, "not_found", "unknown endpoint")
 
     # --- handlers ----------------------------------------------------------
+
+    def send_chat_error(self, exc: Exception) -> None:
+        if isinstance(exc, ChatError):
+            status = HTTPStatus.NOT_FOUND if exc.code == "room_not_found" else HTTPStatus.BAD_REQUEST
+            self.send_error_json(status, exc.code, exc.message)
+        else:
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "invalid_params", str(exc))
+
+    def handle_rooms(self, path: str, body: dict) -> None:
+        chat = self.app.chat
+        targets = body.get("targets") if isinstance(body.get("targets"), list) else []
+        try:
+            if path == "/api/rooms":
+                members = body.get("members") if isinstance(body.get("members"), list) else []
+                room = chat.create(str(body.get("name") or ""), str(body.get("folder") or ""), members, bool(body.get("allow_edits")))
+                self.send_json(HTTPStatus.OK, {"room": room.meta()})
+                return
+            match = ROOM_ACTION.match(path)
+            if not match:
+                self.send_error_json(HTTPStatus.NOT_FOUND, "not_found", "unknown endpoint")
+                return
+            room_id, action = match.group(1), match.group(2)
+            if action == "messages":
+                chat.post(room_id, str(body.get("text") or ""), targets)
+            elif action == "discuss":
+                chat.discuss(room_id, targets)
+            elif action == "stop":
+                chat.stop(room_id)
+            elif action == "update":
+                chat.update(room_id, body)
+            elif action == "delete":
+                chat.delete(room_id)
+            else:
+                self.send_error_json(HTTPStatus.NOT_FOUND, "not_found", "unknown endpoint")
+                return
+            self.send_json(HTTPStatus.OK, {"ok": True})
+        except ChatError as exc:
+            self.send_chat_error(exc)
+
+    def handle_open_folder(self, body: dict) -> None:
+        folder = body.get("path")
+        if not isinstance(folder, str) or not Path(folder).is_dir():
+            self.send_error_json(HTTPStatus.BAD_REQUEST, "not_a_directory", "not a folder")
+            return
+        opener = "open" if sys.platform == "darwin" else "xdg-open"
+        try:
+            subprocess.Popen([opener, folder], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as exc:
+            self.send_error_json(HTTPStatus.BAD_GATEWAY, "open_failed", str(exc))
+            return
+        self.send_json(HTTPStatus.OK, {"ok": True})
+
+    def stream_room(self, room_id: str, query: dict) -> None:
+        try:
+            room = self.app.chat.get(room_id)
+            seen = int((query.get("since") or ["0"])[0])
+        except (ChatError, ValueError) as exc:
+            self.send_chat_error(exc)
+            return
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Accel-Buffering", "no")
+        self.security_headers()
+        self.end_headers()
+        try:
+            first = True
+            while True:
+                if first or room.wait(seen, timeout=20) != seen:
+                    first = False
+                    changes = room.changes_since(seen)
+                    seen = changes["rev"]
+                    self.wfile.write(f"event: room\ndata: {json.dumps(changes)}\n\n".encode())
+                    time.sleep(0.15)  # coalesce bursts of streaming updates
+                else:
+                    self.wfile.write(b": keepalive\n\n")
+                self.wfile.flush()
+                if room_id not in self.app.chat.rooms or not self.app.auth.valid_session(self.cookie_token()):
+                    return
+        except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError):
+            return
 
     def handle_login(self, body: dict) -> None:
         ip = self.client_ip()
@@ -942,6 +1056,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_PREFERRED_AGENTS,
         help=f"comma-separated agent kinds listed first in the UI (default: {DEFAULT_PREFERRED_AGENTS})",
     )
+    parser.add_argument("--data-dir", help="where chat rooms are stored (default: Application Support or ~/.local/share)")
     parser.add_argument(
         "--start-server",
         action="store_true",

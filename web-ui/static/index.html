@@ -9,6 +9,7 @@
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="stylesheet" href="style.css">
   <script src="app.js" defer></script>
+  <script src="chat.js" defer></script>
 </head>
 <body>
   <section id="login-view" class="login" hidden>
@@ -28,13 +29,69 @@
       <div class="brand"><img src="icon.svg" alt="" class="brand-icon"><span>herdr 控制台</span></div>
       <span id="conn-pill" class="pill">連線中</span>
       <nav class="tabs" aria-label="主選單">
-        <button type="button" data-view="home" class="tab active">首頁</button>
+        <button type="button" data-view="chat" class="tab active">聊天</button>
+        <button type="button" data-view="home" class="tab">工作台</button>
         <button type="button" data-view="settings" class="tab">設定</button>
       </nav>
     </header>
 
     <main>
-      <section id="home-view">
+      <section id="chat-view" class="chat-layout">
+        <aside class="room-list-pane">
+          <div class="room-list-head">
+            <h2>聊天室</h2>
+            <button type="button" id="new-room-btn" class="primary small">＋ 新聊天室</button>
+          </div>
+          <ul id="room-list" class="room-list"></ul>
+          <p id="room-list-empty" class="muted small room-list-empty" hidden>
+            還沒有聊天室。按「＋ 新聊天室」，選一個專案資料夾，把 Claude、ChatGPT、Grok 拉進來一起工作。
+          </p>
+        </aside>
+        <section class="room-pane">
+          <div id="room-empty" class="room-empty">
+            <p>選一個聊天室，或建立新的聊天室。</p>
+            <p class="muted small">在聊天室裡可以同時問三個 AI，它們看得到彼此的回覆，也可以按「讓他們討論」讓它們互相回應。</p>
+          </div>
+          <div id="room-main" class="room-main" hidden>
+            <header class="room-head">
+              <button type="button" id="room-back-btn" class="ghost small room-back" aria-label="回到聊天室列表">←</button>
+              <div class="room-title">
+                <strong id="room-name"></strong>
+                <button type="button" id="room-folder" class="linkish small" title="在 Finder 打開"></button>
+              </div>
+              <div id="room-members" class="room-members"></div>
+              <button type="button" id="room-menu-btn" class="ghost small" aria-label="聊天室設定">⋯</button>
+            </header>
+            <div id="room-settings" class="room-settings" hidden>
+              <label class="check"><input type="checkbox" id="room-allow-edits"> 允許 AI 修改這個資料夾裡的檔案</label>
+              <div class="button-row">
+                <button type="button" id="room-rename-btn" class="small">重新命名</button>
+                <button type="button" id="room-open-folder-btn" class="small">打開資料夾</button>
+                <button type="button" id="room-delete-btn" class="small danger">刪除聊天室</button>
+              </div>
+              <p class="muted small">刪除聊天室只會刪掉這裡的對話紀錄，資料夾裡的檔案不會被刪除。</p>
+            </div>
+            <div id="messages" class="messages" aria-live="polite"></div>
+            <footer class="composer">
+              <div class="composer-targets">
+                <span class="muted small">傳給：</span>
+                <div id="target-chips" class="chips"></div>
+              </div>
+              <form id="composer-form" class="composer-form">
+                <textarea id="composer-input" rows="2" placeholder="輸入訊息…" title="Enter 送出，Shift+Enter 換行" aria-label="訊息"></textarea>
+                <button type="submit" class="primary" id="composer-send">送出</button>
+              </form>
+              <div class="composer-actions">
+                <button type="button" id="discuss-btn" class="small">💬 讓他們討論一輪</button>
+                <button type="button" id="stop-btn" class="small danger" hidden>■ 停止</button>
+                <span id="room-busy" class="muted small"></span>
+              </div>
+            </footer>
+          </div>
+        </section>
+      </section>
+
+      <section id="home-view" hidden>
         <div id="offline-banner" class="banner" hidden>
           <div>
             <strong>herdr 還沒有啟動</strong>
