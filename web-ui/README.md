@@ -27,7 +27,29 @@
 - Python 3.9 以上；3.11 以上才能在存檔前檢查 TOML 語法
 - 已安裝 herdr，並有 herdr server 在執行（網頁上也有「啟動 herdr server」按鈕）
 
-## 在自己電腦上使用（最簡單）
+## Mac App（DMG，不用開終端機）
+
+打開 `HerdrWeb-<版本>.dmg`，把「Herdr Web」拖到「應用程式」，之後雙擊就會：
+
+1. 沒裝 herdr 時詢問是否從 herdr.dev 安裝；
+2. 需要 Python 3（macOS 會自動提示安裝「命令列開發者工具」）；
+3. 在背景啟動 herdr 和控制台，用瀏覽器打開 `http://127.0.0.1:8787` 並自動登入。
+
+App 沒有 Apple 開發者簽署，第一次打開會被擋下：macOS 15 以後到「系統設定 → 隱私權與安全性」按「強制打開」；
+macOS 14 以前在 App 上按右鍵 →「打開」。只需要做一次。
+
+登入密碼存在 `~/Library/Application Support/herdr-web/password`，記錄檔在 `~/Library/Logs/herdr-web.log`。
+
+自己打包 DMG：
+
+```bash
+web-ui/macos/build-dmg.sh            # 在 Mac 上用 hdiutil，輸出到 web-ui/dist/
+```
+
+在 Linux 上打包需要 `hfsprogs` 的 `mkfs.hfsplus`，以及 libdmg-hfsplus 的 `hfsplus` 和 `dmg`
+（用 `HFSPLUS_TOOL`、`DMG_TOOL` 環境變數指定）。
+
+## 在自己電腦上使用（終端機）
 
 ```bash
 git clone https://github.com/virus11456/herdr

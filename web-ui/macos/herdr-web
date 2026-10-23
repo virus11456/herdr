@@ -1,0 +1,80 @@
+#!/bin/bash
+# Double-click launcher inside "Herdr Web.app": starts herdr and the web
+# dashboard in the background, then opens the dashboard in the browser.
+# macOS ships bash 3.2, so keep this script free of newer bash features.
+set -u
+
+APP_TITLE="herdr 控制台"
+RES="$(cd "$(dirname "$0")/../Resources" && pwd)"
+SUPPORT="$HOME/Library/Application Support/herdr-web"
+LOG="$HOME/Library/Logs/herdr-web.log"
+PASSWORD_FILE="$SUPPORT/password"
+PORT="${HERDR_WEB_PORT:-8787}"
+URL="http://127.0.0.1:$PORT/"
+
+# Apps opened from Finder do not inherit the shell PATH.
+export PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# herdr starts new panes with $SHELL; make sure panes get the user's login shell.
+if [ -z "${SHELL:-}" ]; then
+    SHELL="$(/usr/bin/dscl . -read "$HOME" UserShell 2>/dev/null | /usr/bin/awk '{print $2}')"
+    export SHELL="${SHELL:-/bin/zsh}"
+fi
+
+alert() {
+    /usr/bin/osascript -e "display alert \"$APP_TITLE\" message \"$1\" as critical" >/dev/null 2>&1
+}
+
+confirm() {
+    /usr/bin/osascript -e "button returned of (display dialog \"$1\" with title \"$APP_TITLE\" buttons {\"取消\", \"$2\"} default button \"$2\")" 2>/dev/null
+}
+
+mkdir -p "$SUPPORT" "$(dirname "$LOG")"
+echo "--- $(date) launching" >> "$LOG"
+
+HERDR="$(command -v herdr || true)"
+if [ -z "$HERDR" ]; then
+    if [ "$(confirm "這台 Mac 還沒有安裝 herdr。要現在從 herdr.dev 下載並安裝嗎？" "安裝")" = "安裝" ]; then
+        /bin/sh -c 'curl -fsSL https://herdr.dev/install.sh | sh' >> "$LOG" 2>&1
+        HERDR="$(command -v herdr || true)"
+    fi
+    if [ -z "$HERDR" ]; then
+        alert "找不到 herdr。請在終端機執行 curl -fsSL https://herdr.dev/install.sh | sh 安裝後，再打開一次。"
+        exit 1
+    fi
+fi
+
+PYTHON="$(command -v python3 || true)"
+if [ -z "$PYTHON" ] || ! "$PYTHON" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' >> "$LOG" 2>&1; then
+    alert "需要 Python 3。如果 macOS 跳出「安裝命令列開發者工具」的視窗，請按安裝，完成後再打開一次。"
+    exit 1
+fi
+
+if [ ! -s "$PASSWORD_FILE" ]; then
+    (umask 077 && /usr/bin/openssl rand -hex 16 > "$PASSWORD_FILE")
+fi
+PASSWORD="$(cat "$PASSWORD_FILE")"
+
+running() {
+    /usr/bin/curl -fsS --max-time 2 "${URL}api/session" 2>/dev/null | /usr/bin/grep -q authenticated
+}
+
+if ! running; then
+    nohup "$PYTHON" "$RES/web-ui/herdr_web.py" \
+        --herdr-bin "$HERDR" \
+        --password-file "$PASSWORD_FILE" \
+        --start-server \
+        --port "$PORT" >> "$LOG" 2>&1 &
+    tries=0
+    until running; do
+        tries=$((tries + 1))
+        if [ "$tries" -gt 80 ]; then
+            alert "控制台沒有成功啟動。詳細記錄在 ~/Library/Logs/herdr-web.log。"
+            exit 1
+        fi
+        sleep 0.25
+    done
+fi
+
+# The password rides in the URL fragment, which never reaches the server; the
+# page logs in with it and removes it from the address bar.
+/usr/bin/open "${URL}#login=${PASSWORD}"
