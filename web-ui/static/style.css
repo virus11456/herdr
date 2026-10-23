@@ -652,3 +652,6 @@ button.chip.target.active { opacity: 1; border-color: var(--accent); color: var(
 .login-card .app-version { text-align: center; margin: 0; }
 .pane-link { display: block; margin: 0 0 8px; padding: 10px 14px; border-radius: 10px; background: var(--accent); color: #fff; font-weight: 600; text-align: center; text-decoration: none; }
 .pane-link[hidden] { display: none; }
+.session-row { display: flex; align-items: stretch; gap: 6px; }
+.session-row .session-card { flex: 1; min-width: 0; }
+.session-close { flex: none; width: 40px; border-radius: 12px; }

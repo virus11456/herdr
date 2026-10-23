@@ -41,7 +41,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - depends on interpreter
     tomllib = None
 
-__version__ = "0.7.0"
+__version__ = "0.7.1"
 
 log = logging.getLogger("herdr-web")
 

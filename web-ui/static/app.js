@@ -364,8 +364,13 @@ function paneById(paneId) {
   return (state.snapshot?.panes || []).find((pane) => pane.pane_id === paneId) || null;
 }
 
+/* Agents that are not offered on the home screen but may still be running. */
+const OTHER_TOOLS = {
+  gemini: { kind: "gemini", name: "Gemini（舊版）", product: "Gemini CLI", logo: "✦", tone: "gemini" },
+};
+
 function toolForPane(pane) {
-  return AI_TOOLS[pane.agent] || null;
+  return AI_TOOLS[pane.agent] || OTHER_TOOLS[pane.agent] || null;
 }
 
 function paneName(pane) {
@@ -551,11 +556,16 @@ function renderSessions() {
     const tool = toolForPane(pane);
     root.append(
       h(
-        "button",
-        { type: "button", class: `session-card ${pane.agent_status}`, onclick: () => openPane(pane.pane_id) },
-        h("span", { class: `ai-logo small ${tool ? tool.tone : "shell"}`, text: tool ? tool.logo : ">_", "aria-hidden": "true" }),
-        h("span", { class: "session-main" }, h("strong", { text: paneName(pane) }), h("span", { class: "muted small", text: `📁 ${basename(paneFolder(pane))}` })),
-        h("span", { class: "session-status" }, h("span", { class: `dot ${pane.agent_status}` }), statusBadge(pane)),
+        "div",
+        { class: "session-row" },
+        h(
+          "button",
+          { type: "button", class: `session-card ${pane.agent_status}`, onclick: () => openPane(pane.pane_id) },
+          h("span", { class: `ai-logo small ${tool ? tool.tone : "shell"}`, text: tool ? tool.logo : ">_", "aria-hidden": "true" }),
+          h("span", { class: "session-main" }, h("strong", { text: paneName(pane) }), h("span", { class: "muted small", text: `📁 ${basename(paneFolder(pane))}` })),
+          h("span", { class: "session-status" }, h("span", { class: `dot ${pane.agent_status}` }), statusBadge(pane)),
+        ),
+        h("button", { type: "button", class: "icon ghost danger session-close", title: "結束這個對話", "aria-label": `結束「${paneName(pane)}」`, text: "✕", onclick: () => endPane(pane) }),
       ),
     );
   }
@@ -949,12 +959,14 @@ async function renamePane() {
   await run(() => call("pane.rename", { pane_id: pane.pane_id, label: values.label || null }));
 }
 
+async function endPane(pane) {
+  if (!(await confirmAction("結束這個對話？", `「${paneName(pane)}」和裡面正在跑的程式都會被關掉。你的檔案不會被刪除。`, "結束"))) return false;
+  return Boolean(await run(() => call("pane.close", { pane_id: pane.pane_id }).then(() => true)));
+}
+
 async function killPane() {
   const pane = paneById(state.openPaneId);
-  if (!pane) return;
-  if (!(await confirmAction("結束這個對話？", `「${paneName(pane)}」和裡面正在跑的程式都會被關掉。你的檔案不會被刪除。`, "結束"))) return;
-  const ok = await run(() => call("pane.close", { pane_id: pane.pane_id }).then(() => true));
-  if (ok) closePane();
+  if (pane && (await endPane(pane))) closePane();
 }
 
 /* ---------- settings ---------- */
