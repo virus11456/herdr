@@ -3,9 +3,9 @@
 /* Plain-language labels: the home screen never shows herdr's internal terms. */
 const STATUS_LABELS = {
   working: "正在工作…",
-  blocked: "等你回覆",
-  done: "完成了",
-  idle: "待命中",
+  blocked: "等你回答問題",
+  done: "做完了，可以看結果",
+  idle: "準備好了，等你下指令",
   unknown: "終端機",
 };
 const STATUS_ORDER = ["blocked", "working", "done", "idle"];
