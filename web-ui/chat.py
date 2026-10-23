@@ -343,6 +343,8 @@ class Room:
         # Each item: kind, role, message_id, plus task/round for leader mode.
         self.queue: list[dict] = []
         self.process: subprocess.Popen | None = None
+        # The turn being worked on, from leaving the queue until it is saved.
+        self.current: dict | None = None
         self.stopping = False
         self.worker: threading.Thread | None = None
 
@@ -361,9 +363,14 @@ class Room:
     def meta(self) -> dict:
         with self.lock:
             data = {key: value for key, value in self.data.items() if key not in ("messages", "sessions", "seen")}
-            data["busy"] = bool(self.queue) or self.process is not None
+            data["busy"] = self.busy
             data["queued"] = [item["kind"] for item in self.queue]
             return data
+
+    @property
+    def busy(self) -> bool:
+        """Caller holds the lock."""
+        return bool(self.queue) or self.current is not None or self.process is not None
 
     def changes_since(self, rev: int) -> dict:
         with self.lock:
@@ -537,6 +544,9 @@ class ChatManager:
     def discuss(self, room_id: str, targets: list[str]) -> None:
         room = self.get(room_id)
         with room.lock:
+            # Repeated clicks on a slow connection must not stack up rounds.
+            if room.busy:
+                raise ChatError("busy", "大家還在回覆中，等這一輪結束後再按。")
             targets = [kind for kind in targets if kind in room.data["members"]] or list(room.data["members"])
             for kind in targets:
                 self._enqueue(room, kind, "discuss")
@@ -626,9 +636,11 @@ class ChatManager:
                     room.bump()
                     return
                 item = room.queue.pop(0)
+                room.current = item
                 kind = item["kind"]
                 message = next((entry for entry in room.data["messages"] if entry["id"] == item["message_id"]), None)
                 if message is None or message["status"] != "queued":
+                    room.current = None
                     continue
                 message["status"] = "running"
                 message["at"] = now()
@@ -644,6 +656,8 @@ class ChatManager:
                     message["status"] = "error"
                     message["error"] = str(exc)
                     room.bump(message)
+            with room.lock:
+                room.current = None
             self.save(room)
 
     def compose_prompt(self, room: Room, kind: str, note: str | None, upto: int) -> str:

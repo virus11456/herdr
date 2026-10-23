@@ -238,6 +238,20 @@ class RoomTests(ChatTestCase):
         self.assertEqual(reply["status"], "error")
         self.assertIn("自動停止", reply["error"])
 
+    def test_discuss_refuses_while_busy(self) -> None:
+        os.environ["FAKE_AGENT_MODE"] = "slow"
+        room = self.manager.create("demo", str(self.folder), ["claude", "grok"], False)
+        self.manager.post(room.id, "hi", ["claude"])
+        with self.assertRaises(chat.ChatError) as ctx:
+            self.manager.discuss(room.id, [])
+        self.assertEqual(ctx.exception.code, "busy")
+        self.manager.stop(room.id)
+        self.wait_idle(room, timeout=10)
+        os.environ.pop("FAKE_AGENT_MODE")
+        self.manager.discuss(room.id, [])  # idle again: allowed
+        self.wait_idle(room)
+        self.assertEqual(len([m for m in room.data["messages"] if m["role"] == "discuss"]), 2)
+
     def test_rooms_persist_and_interrupted_turns_become_errors(self) -> None:
         room = self.manager.create("demo", str(self.folder), ["claude"], False)
         self.manager.post(room.id, "hi", ["claude"])

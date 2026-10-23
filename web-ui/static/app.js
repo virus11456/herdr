@@ -1068,10 +1068,22 @@ function showLogin() {
   $("login-password").focus();
 }
 
+/* One event stream per page carries herdr state and, when a chat room is
+   open, that room's changes: browsers allow only six connections per site
+   across all tabs, and extra streams make every other request wait. */
 function connectEvents() {
   if (state.events) state.events.close();
-  const source = new EventSource("/api/events");
+  const roomId = typeof chat !== "undefined" ? chat.roomId : null;
+  const source = new EventSource(roomId ? `/api/events?room=${roomId}&since=${chat.rev}` : "/api/events");
   state.events = source;
+  source.addEventListener("room", (event) => {
+    if (typeof chat === "undefined" || chat.roomId !== roomId) return;
+    try {
+      applyRoomChanges(JSON.parse(event.data));
+    } catch (err) {
+      console.error("bad room event", err);
+    }
+  });
   source.addEventListener("state", (event) => {
     try {
       applyState(JSON.parse(event.data));

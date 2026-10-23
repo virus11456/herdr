@@ -41,7 +41,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - depends on interpreter
     tomllib = None
 
-__version__ = "0.5.1"
+__version__ = "0.6.0"
 
 log = logging.getLogger("herdr-web")
 
@@ -116,7 +116,6 @@ LIFECYCLE_EVENTS = [
 ]
 
 ROOM_PATH = re.compile(r"^/api/rooms/([0-9a-f]{12})$")
-ROOM_EVENTS = re.compile(r"^/api/rooms/([0-9a-f]{12})/events$")
 ROOM_ACTION = re.compile(r"^/api/rooms/([0-9a-f]{12})/(messages|discuss|stop|update|delete)$")
 
 CONTENT_TYPES = {
@@ -715,7 +714,7 @@ class Handler(BaseHTTPRequestHandler):
                 version, payload = self.app.hub.current()
                 self.send_json(HTTPStatus.OK, {"version": version, **payload})
             elif path == "/api/events":
-                self.stream_events()
+                self.stream_events(query)
             elif path == "/api/meta":
                 self.send_json(
                     HTTPStatus.OK,
@@ -728,8 +727,6 @@ class Handler(BaseHTTPRequestHandler):
                 )
             elif path == "/api/rooms":
                 self.send_json(HTTPStatus.OK, {"rooms": self.app.chat.list()})
-            elif ROOM_EVENTS.match(path):
-                self.stream_room(ROOM_EVENTS.match(path).group(1), query)
             elif ROOM_PATH.match(path):
                 try:
                     room = self.app.chat.get(ROOM_PATH.match(path).group(1))
@@ -869,36 +866,6 @@ class Handler(BaseHTTPRequestHandler):
             return
         self.send_json(HTTPStatus.OK, {"ok": True})
 
-    def stream_room(self, room_id: str, query: dict) -> None:
-        try:
-            room = self.app.chat.get(room_id)
-            seen = int((query.get("since") or ["0"])[0])
-        except (ChatError, ValueError) as exc:
-            self.send_chat_error(exc)
-            return
-        self.send_response(HTTPStatus.OK)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("X-Accel-Buffering", "no")
-        self.security_headers()
-        self.end_headers()
-        try:
-            first = True
-            while True:
-                if first or room.wait(seen, timeout=20) != seen:
-                    first = False
-                    changes = room.changes_since(seen)
-                    seen = changes["rev"]
-                    self.wfile.write(f"event: room\ndata: {json.dumps(changes)}\n\n".encode())
-                    time.sleep(0.15)  # coalesce bursts of streaming updates
-                else:
-                    self.wfile.write(b": keepalive\n\n")
-                self.wfile.flush()
-                if room_id not in self.app.chat.rooms or not self.app.auth.valid_session(self.cookie_token()):
-                    return
-        except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError):
-            return
-
     def handle_login(self, body: dict) -> None:
         ip = self.client_ip()
         if not self.app.auth.login_allowed(ip):
@@ -970,7 +937,21 @@ class Handler(BaseHTTPRequestHandler):
             return {"status": "not_applied", "diagnostics": [exc.message]}
         return {"status": result.get("status"), "diagnostics": result.get("diagnostics") or []}
 
-    def stream_events(self) -> None:
+    def stream_events(self, query: dict) -> None:
+        """One event stream per page: herdr state, plus the open chat room if any.
+
+        Browsers allow only six connections per site, shared by every tab, so a
+        page keeps a single stream instead of one per feature.
+        """
+        room = None
+        room_seen = 0
+        room_id = (query.get("room") or [""])[0]
+        if room_id:
+            try:
+                room = self.app.chat.get(room_id)
+                room_seen = int((query.get("since") or ["0"])[0])
+            except (ChatError, ValueError):
+                room = None
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-store")
@@ -978,18 +959,35 @@ class Handler(BaseHTTPRequestHandler):
         self.security_headers()
         self.end_headers()
         seen = -1
+        room_sent = False
+        last_write = time.monotonic()
         try:
             while True:
-                version, payload = self.app.hub.wait_for_change(seen, timeout=20)
+                wrote = False
+                version, payload = self.app.hub.current()
                 if version != seen:
                     seen = version
                     data = json.dumps({"version": version, **payload})
                     self.wfile.write(f"event: state\ndata: {data}\n\n".encode("utf-8"))
-                else:
+                    wrote = True
+                if room is not None:
+                    if room.id not in self.app.chat.rooms:
+                        room = None
+                    elif not room_sent or room.data.get("rev", 0) != room_seen:
+                        changes = room.changes_since(room_seen)
+                        room_seen, room_sent = changes["rev"], True
+                        self.wfile.write(f"event: room\ndata: {json.dumps(changes)}\n\n".encode())
+                        wrote = True
+                if not wrote and time.monotonic() - last_write > 20:
                     self.wfile.write(b": keepalive\n\n")
-                self.wfile.flush()
-                if not self.app.auth.valid_session(self.cookie_token()):
-                    return
+                    wrote = True
+                if wrote:
+                    self.wfile.flush()
+                    last_write = time.monotonic()
+                    if not self.app.auth.valid_session(self.cookie_token()):
+                        return
+                # Wakes at once on a herdr change; room changes are picked up within 0.3 s.
+                self.app.hub.wait_for_change(seen, timeout=0.3)
         except (BrokenPipeError, ConnectionResetError, ssl.SSLError, OSError):
             return
 

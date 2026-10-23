@@ -255,16 +255,9 @@ async function createRoom() {
 
 /* ---------- one room ---------- */
 
-function closeRoomStream() {
-  if (chat.source) {
-    chat.source.close();
-    chat.source = null;
-  }
-}
-
 async function openRoom(roomId) {
-  closeRoomStream();
   chat.roomId = roomId;
+  chat.pending = false;
   chat.room = null;
   chat.order = [];
   chat.messages.clear();
@@ -284,40 +277,18 @@ async function openRoom(roomId) {
     toast(err.message, "error");
     return;
   }
-  connectRoom();
+  connectEvents();
   scrollMessages(true);
   $("composer-input").focus();
 }
 
 function closeRoom() {
-  closeRoomStream();
   chat.roomId = null;
+  connectEvents();
   $("room-main").hidden = true;
   $("room-empty").hidden = false;
   $("chat-view").classList.remove("room-open");
   renderRoomList();
-}
-
-function connectRoom() {
-  closeRoomStream();
-  const roomId = chat.roomId;
-  const source = new EventSource(`/api/rooms/${roomId}/events?since=${chat.rev}`);
-  chat.source = source;
-  source.addEventListener("room", (event) => {
-    if (chat.roomId !== roomId) return;
-    try {
-      applyRoomChanges(JSON.parse(event.data));
-    } catch (err) {
-      console.error("bad room event", err);
-    }
-  });
-  source.addEventListener("error", () => {
-    if (source.readyState === EventSource.CLOSED && chat.source === source) {
-      setTimeout(() => {
-        if (chat.source === source && chat.roomId === roomId) connectRoom();
-      }, 3000);
-    }
-  });
 }
 
 function applyRoomChanges(changes) {
@@ -325,6 +296,8 @@ function applyRoomChanges(changes) {
   let finished = false;
   chat.room = changes.room;
   chat.rev = changes.rev;
+  // The server has picked up the last quick action once the room reports busy.
+  if (changes.room.busy) chat.pending = false;
   for (const message of changes.messages) {
     const previous = chat.messages.get(message.id);
     if (!previous) chat.order.push(message.id);
@@ -419,7 +392,7 @@ function renderComposer() {
   }
   const busy = room.busy;
   $("stop-btn").hidden = !busy;
-  $("discuss-btn").disabled = busy || room.members.length < 2;
+  renderQuickActions();
   const running = [...chat.messages.values()].find((message) => message.status === "running");
   $("room-busy").textContent = running
     ? `${chatTool(running.from).name} 正在回覆…${room.queued.length ? `（之後還有 ${room.queued.map((kind) => chatTool(kind).name).join("、")}）` : ""}`
@@ -586,11 +559,81 @@ async function sendChat(event) {
   }
 }
 
-async function discuss() {
-  if (!chat.room) return;
-  const targets = chat.room.members.filter((kind) => chat.targets.has(kind));
-  await run(() => api(`/api/rooms/${chat.room.id}/discuss`, { method: "POST", body: { targets: targets.length > 1 ? targets : chat.room.members } }));
-  scrollMessages(true);
+/* One-click instructions. "discuss" is a moderator round; the others are sent
+   as a visible message from the user, addressed with @-mentions so the
+   transcript shows who was asked. */
+const QUICK_ACTIONS = [
+  { id: "discuss", label: "💬 讓他們討論一輪", title: "每個 AI 針對最新的討論再回應一次", needsTwo: true },
+  { id: "check", label: "🔍 互相檢查", to: "all", needsTwo: true, text: "請檢查其他成員剛才的回覆或成果，指出錯誤、遺漏或可以改進的地方，不用重複別人說過的。" },
+  { id: "summary", label: "📝 總結", to: "one", text: "請總結目前的討論和進度：已經完成了什麼、結論是什麼、還有什麼沒做完。" },
+  { id: "todo", label: "📋 列待辦", to: "one", text: "請整理接下來要做的事情清單，每一項標明建議由誰負責。" },
+  { id: "continue", label: "▶️ 繼續", to: "route", text: "請繼續剛才還沒完成的工作。" },
+  { id: "simple", label: "🧒 說簡單一點", to: "route", text: "請用簡單、不用專業術語的方式，再解釋一次剛才的內容。" },
+  { id: "folder", label: "📂 看看資料夾", to: "one", text: "請看一下這個資料夾裡有哪些檔案，簡單介紹它們是做什麼的。" },
+];
+
+function quickRecipients(action) {
+  const room = chat.room;
+  if (action.to === "all") return room.members;
+  if (action.to === "one") {
+    if (room.leader) return [room.leader];
+    return [room.members.find((kind) => chat.targets.has(kind)) || room.members[0]];
+  }
+  return null; // "route": the usual routing (reply, leader or selected chips)
+}
+
+function renderQuickActions() {
+  const room = chat.room;
+  const box = $("quick-actions");
+  box.replaceChildren();
+  if (!room) return;
+  const locked = room.busy || chat.pending;
+  for (const action of QUICK_ACTIONS) {
+    if (action.needsTwo && room.members.length < 2) continue;
+    box.append(
+      h("button", {
+        type: "button",
+        class: "small quick",
+        text: action.label,
+        title: locked ? "等 AI 回覆完再按" : action.title || action.text,
+        disabled: locked,
+        onclick: () => runQuickAction(action),
+      }),
+    );
+  }
+}
+
+async function runQuickAction(action) {
+  const room = chat.room;
+  if (!room || room.busy || chat.pending) return;
+  // Lock the buttons at once: a slow connection must not turn extra clicks into extra rounds.
+  chat.pending = true;
+  renderQuickActions();
+  $("room-busy").textContent = "已送出，等 AI 開始回覆…";
+  try {
+    if (action.id === "discuss") {
+      const targets = room.members.filter((kind) => chat.targets.has(kind));
+      await api(`/api/rooms/${room.id}/discuss`, { method: "POST", body: { targets: targets.length > 1 ? targets : room.members } });
+    } else {
+      const recipients = quickRecipients(action);
+      const prefix = recipients ? `${recipients.map((kind) => `@${chatTool(kind).name}`).join(" ")} ` : "";
+      const targets = room.members.filter((kind) => chat.targets.has(kind));
+      await api(`/api/rooms/${room.id}/messages`, { method: "POST", body: { text: prefix + action.text, targets, reply_to: recipients ? null : chat.replyTo?.id || null } });
+      if (!recipients) cancelReply();
+    }
+    scrollMessages(true);
+  } catch (err) {
+    chat.pending = false;
+    toast(err.message, "error");
+    renderComposer();
+  }
+  // Safety net: unlock even if no busy update ever arrives.
+  setTimeout(() => {
+    if (chat.pending) {
+      chat.pending = false;
+      renderComposer();
+    }
+  }, 8000);
 }
 
 async function stopRoom() {
@@ -648,7 +691,6 @@ function bindChat() {
     // Enter sends; Shift+Enter adds a line; never send while an IME is composing.
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) sendChat(event);
   });
-  $("discuss-btn").addEventListener("click", discuss);
   $("reply-cancel").addEventListener("click", cancelReply);
   $("composer-input").addEventListener("input", () => {
     updateMentionSuggest();

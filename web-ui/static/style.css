@@ -643,3 +643,7 @@ button.chip.target.active { opacity: 1; border-color: var(--accent); color: var(
   white-space: nowrap;
 }
 .ai-logo.gemini { background: linear-gradient(135deg, #4285f4, #9b72cb 60%, #d96570); }
+.quick-actions { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 2px; }
+.quick-actions .quick { flex: none; white-space: nowrap; }
+.composer-status { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 0; }
+.composer-status:empty { display: none; }
