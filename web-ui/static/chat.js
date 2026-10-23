@@ -5,6 +5,8 @@
    confirmAction, AI_TOOLS, state, openPane, offerInstall, toolStatus). */
 
 const TARGETS_KEY = "herdr-web:targets:";
+const MENTION_NAMES = { claude: "claude", chatgpt: "codex", codex: "codex", gpt: "codex", grok: "grok" };
+const MENTION_PATTERN = /[@＠](claude|chatgpt|codex|gpt|grok)(?![A-Za-z])/gi;
 
 const chat = {
   rooms: [],
@@ -17,7 +19,98 @@ const chat = {
   source: null,
   listTimer: null,
   targets: new Set(),
+  replyTo: null,
 };
+
+/* Who a message will go to, mirroring the server: @-mentions first, then a
+   reply's author, then the leader, then the selected chips. */
+function mentionedKinds(text, members) {
+  const found = [];
+  for (const match of text.matchAll(MENTION_PATTERN)) {
+    const kind = MENTION_NAMES[match[1].toLowerCase()];
+    if (members.includes(kind) && !found.includes(kind)) found.push(kind);
+  }
+  return found;
+}
+
+function routeFor(text) {
+  const room = chat.room;
+  const mentioned = mentionedKinds(text, room.members);
+  const reply = chat.replyTo && room.members.includes(chat.replyTo.from) ? chat.replyTo.from : null;
+  if (mentioned.length || reply) {
+    // A reply sends no chip targets, so only mentions and the quoted author receive it.
+    const kinds = [...mentioned];
+    if (reply && !kinds.includes(reply)) kinds.unshift(reply);
+    return { kinds, reason: mentioned.length ? "你 @ 了" : "回覆" };
+  }
+  if (room.leader) return { kinds: [room.leader], reason: "隊長" };
+  return { kinds: room.members.filter((kind) => chat.targets.has(kind)), reason: "" };
+}
+
+function renderRouteHint() {
+  if (!chat.room) return;
+  const { kinds, reason } = routeFor($("composer-input").value);
+  const names = kinds.map((kind) => chatTool(kind).name).join("、");
+  $("route-hint").textContent = names ? `→ 會傳給：${names}${reason ? `（${reason}）` : ""}` : "";
+}
+
+function renderReplyBar() {
+  const bar = $("reply-bar");
+  const reply = chat.replyTo;
+  bar.hidden = !reply;
+  if (reply) $("reply-text").textContent = `↩ 回覆 ${chatTool(reply.from).name}：${reply.text.replace(/\s+/g, " ").slice(0, 60)}${reply.text.length > 60 ? "…" : ""}`;
+}
+
+function startReply(message) {
+  chat.replyTo = message;
+  renderReplyBar();
+  renderComposer();
+  $("composer-input").focus();
+}
+
+function cancelReply() {
+  chat.replyTo = null;
+  renderReplyBar();
+  renderComposer();
+}
+
+function updateMentionSuggest() {
+  const input = $("composer-input");
+  const box = $("mention-suggest");
+  const before = input.value.slice(0, input.selectionStart);
+  const match = before.match(/[@＠]([A-Za-z]*)$/);
+  box.replaceChildren();
+  if (!match || !chat.room) {
+    box.hidden = true;
+    return;
+  }
+  const typed = match[1].toLowerCase();
+  const options = chat.room.members.filter((kind) => chatTool(kind).name.toLowerCase().startsWith(typed) || kind.startsWith(typed));
+  for (const kind of options) {
+    const tool = chatTool(kind);
+    box.append(
+      h(
+        "button",
+        {
+          type: "button",
+          class: "chip",
+          onclick: () => {
+            const start = before.length - match[0].length;
+            input.value = `${input.value.slice(0, start)}@${tool.name} ${input.value.slice(input.selectionStart)}`;
+            const caret = start + tool.name.length + 2;
+            input.setSelectionRange(caret, caret);
+            box.hidden = true;
+            input.focus();
+            renderRouteHint();
+          },
+        },
+        h("span", { class: `ai-logo tiny ${tool.tone}`, text: tool.logo }),
+        `@${tool.name}`,
+      ),
+    );
+  }
+  box.hidden = options.length === 0;
+}
 
 function chatTool(kind) {
   return AI_TOOLS[kind] || { kind, name: kind, logo: (kind[0] || "?").toUpperCase(), tone: "other" };
@@ -177,6 +270,8 @@ async function openRoom(roomId) {
   chat.messages.clear();
   chat.elements.clear();
   chat.rev = 0;
+  chat.replyTo = null;
+  renderReplyBar();
   $("messages").replaceChildren();
   $("room-empty").hidden = true;
   $("room-main").hidden = false;
@@ -295,12 +390,12 @@ function renderComposer() {
   }
   const chips = $("target-chips");
   chips.replaceChildren();
-  const leader = room.leader;
-  $("composer-targets-label").textContent = leader ? "" : "傳給：";
+  const leader = chat.replyTo ? null : room.leader;
+  $("composer-targets-label").textContent = leader || chat.replyTo ? "" : "傳給：";
   if (leader) {
     chips.append(h("span", { class: "leader-hint" }, `👑 訊息會交給隊長 ${chatTool(leader).name}，由它分派工作給其他成員，最後向你總結。`));
   }
-  for (const kind of leader ? [] : room.members) {
+  for (const kind of leader || chat.replyTo ? [] : room.members) {
     const tool = chatTool(kind);
     const on = chat.targets.has(kind);
     chips.append(
@@ -329,6 +424,7 @@ function renderComposer() {
   $("room-busy").textContent = running
     ? `${chatTool(running.from).name} 正在回覆…${room.queued.length ? `（之後還有 ${room.queued.map((kind) => chatTool(kind).name).join("、")}）` : ""}`
     : "";
+  renderRouteHint();
 }
 
 function renderMessage(message) {
@@ -341,9 +437,23 @@ function renderMessage(message) {
 }
 
 function userBubble(message) {
+  const quoted = message.reply_to;
+  const quote = quoted
+    ? h(
+        "button",
+        {
+          type: "button",
+          class: "quote",
+          title: "跳到原本的訊息",
+          onclick: () => chat.elements.get(quoted.id)?.scrollIntoView({ behavior: "smooth", block: "center" }),
+        },
+        `↩ ${chatTool(quoted.from).name}：${quoted.excerpt.slice(0, 80)}${quoted.excerpt.length > 80 ? "…" : ""}`,
+      )
+    : null;
   return h(
     "div",
     { class: "msg user" },
+    quote,
     h("div", { class: "bubble" }, renderRichText(message.text)),
     h("span", { class: "msg-time muted small", text: formatTime(message.at) }),
   );
@@ -381,7 +491,15 @@ function agentBubble(message) {
     h(
       "div",
       { class: "msg-col" },
-      h("span", { class: "msg-name" }, tool.name, h("span", { class: "msg-time muted small", text: formatTime(message.at) })),
+      h(
+        "span",
+        { class: "msg-name" },
+        tool.name,
+        h("span", { class: "msg-time muted small", text: formatTime(message.at) }),
+        message.status === "done" && message.text
+          ? h("button", { type: "button", class: "reply-btn", text: "↩ 回覆", title: `回覆 ${tool.name} 這段話`, onclick: () => startReply(message) })
+          : null,
+      ),
       role,
       steps,
       body,
@@ -452,11 +570,13 @@ async function sendChat(event) {
   const input = $("composer-input");
   const text = input.value.trim();
   if (!text || !chat.room) return;
-  const targets = chat.room.members.filter((kind) => chat.targets.has(kind));
+  const targets = chat.replyTo ? [] : chat.room.members.filter((kind) => chat.targets.has(kind));
   $("composer-send").disabled = true;
   try {
-    await api(`/api/rooms/${chat.room.id}/messages`, { method: "POST", body: { text, targets } });
+    await api(`/api/rooms/${chat.room.id}/messages`, { method: "POST", body: { text, targets, reply_to: chat.replyTo?.id || null } });
     input.value = "";
+    $("mention-suggest").hidden = true;
+    cancelReply();
     scrollMessages(true);
   } catch (err) {
     toast(err.message, "error");
@@ -529,6 +649,11 @@ function bindChat() {
     if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) sendChat(event);
   });
   $("discuss-btn").addEventListener("click", discuss);
+  $("reply-cancel").addEventListener("click", cancelReply);
+  $("composer-input").addEventListener("input", () => {
+    updateMentionSuggest();
+    renderRouteHint();
+  });
   $("stop-btn").addEventListener("click", stopRoom);
   $("room-menu-btn").addEventListener("click", () => {
     $("room-settings").hidden = !$("room-settings").hidden;

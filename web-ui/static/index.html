@@ -78,6 +78,11 @@
                 <span class="muted small" id="composer-targets-label">傳給：</span>
                 <div id="target-chips" class="chips"></div>
               </div>
+              <div id="reply-bar" class="reply-bar" hidden>
+                <span id="reply-text"></span>
+                <button type="button" id="reply-cancel" class="ghost small" aria-label="取消回覆">✕</button>
+              </div>
+              <div id="mention-suggest" class="chips mention-suggest" hidden></div>
               <form id="composer-form" class="composer-form">
                 <textarea id="composer-input" rows="2" placeholder="輸入訊息…" title="Enter 送出，Shift+Enter 換行" aria-label="訊息"></textarea>
                 <button type="submit" class="primary" id="composer-send">送出</button>
@@ -85,6 +90,7 @@
               <div class="composer-actions">
                 <button type="button" id="discuss-btn" class="small">💬 讓他們討論一輪</button>
                 <button type="button" id="stop-btn" class="small danger" hidden>■ 停止</button>
+                <span id="route-hint" class="small route-hint"></span>
                 <span id="room-busy" class="muted small"></span>
               </div>
             </footer>

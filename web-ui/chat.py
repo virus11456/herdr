@@ -39,6 +39,9 @@ MAX_ASSIGNMENTS = 6
 NAME_TO_KIND = {"claude": "claude", "chatgpt": "codex", "codex": "codex", "gpt": "codex", "grok": "grok"}
 ASSIGN_LINE = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?[@＠]\s*([A-Za-z]+)\s*[:：]\s*(.+?)\s*$")
 
+# "@Claude", "@chatgpt", "＠grok" anywhere in a user's message, also right before Chinese text.
+MENTION = re.compile(r"[@＠](claude|chatgpt|codex|gpt|grok)(?![A-Za-z])", re.IGNORECASE)
+
 MAX_CONTEXT_MESSAGES = 30
 MAX_CONTEXT_CHARS = 24000
 MAX_ACTIVITY = 200
@@ -258,6 +261,16 @@ def parse_assignments(text: str, members: list[str], leader: str) -> list[tuple[
     return assignments[:MAX_ASSIGNMENTS]
 
 
+def parse_mentions(text: str, members: list[str]) -> list[str]:
+    """Members @-mentioned in a message, in order of first appearance."""
+    found: list[str] = []
+    for match in MENTION.finditer(text):
+        kind = NAME_TO_KIND.get(match.group(1).lower())
+        if kind in members and kind not in found:
+            found.append(kind)
+    return found
+
+
 # --- rooms ------------------------------------------------------------------
 
 
@@ -440,17 +453,33 @@ class ChatManager:
 
     # conversation
 
-    def post(self, room_id: str, text: str, targets: list[str]) -> dict:
+    def post(self, room_id: str, text: str, targets: list[str], reply_to: str | None = None) -> dict:
         room = self.get(room_id)
         text = text.strip()
         if not text:
             raise ChatError("empty", "訊息是空的")
         with room.lock:
+            quoted = None
+            if reply_to:
+                original = next((item for item in room.data["messages"] if item["id"] == reply_to), None)
+                if original is None or original["from"] not in AGENTS or not original["text"]:
+                    raise ChatError("bad_reply", "找不到要回覆的那則訊息")
+                excerpt = " ".join(original["text"].split())
+                quoted = {"id": original["id"], "from": original["from"], "excerpt": excerpt[:200]}
             message = _message("user", text)
+            message["reply_to"] = quoted
             room.data["messages"].append(message)
             room.bump(message)
             leader = room.data.get("leader")
-            if leader:
+            mentioned = parse_mentions(text, room.data["members"])
+            if quoted or mentioned:
+                # @-mentions and replies go straight to those AIs, even past a leader.
+                chosen = mentioned or [kind for kind in targets if kind in room.data["members"]]
+                if quoted and quoted["from"] in room.data["members"] and quoted["from"] not in chosen:
+                    chosen.insert(0, quoted["from"])
+                for kind in chosen:
+                    self._enqueue(room, kind, "reply")
+            elif leader:
                 # In leader mode every request goes to the leader, who assigns the work.
                 self._enqueue(room, leader, "lead", round_=1)
             else:
@@ -589,7 +618,12 @@ class ChatManager:
         lines = []
         for item in history:
             speaker = "使用者" if item["from"] == "user" else AGENTS.get(item["from"], {}).get("name", item["from"])
-            lines.append(f"[{speaker}]：{item['text']}")
+            prefix = f"[{speaker}]"
+            quoted = item.get("reply_to")
+            if quoted:
+                target = "你" if quoted["from"] == kind else AGENTS.get(quoted["from"], {}).get("name", quoted["from"])
+                prefix += f"（回覆{target}說的「{quoted['excerpt'][:120]}」）"
+            lines.append(f"{prefix}：{item['text']}")
         transcript = "\n\n".join(lines)
         if len(transcript) > MAX_CONTEXT_CHARS:
             transcript = "…（較早的內容省略）\n" + transcript[-MAX_CONTEXT_CHARS:]

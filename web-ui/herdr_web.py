@@ -41,7 +41,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - depends on interpreter
     tomllib = None
 
-__version__ = "0.4.0"
+__version__ = "0.4.1"
 
 log = logging.getLogger("herdr-web")
 
@@ -836,7 +836,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             room_id, action = match.group(1), match.group(2)
             if action == "messages":
-                chat.post(room_id, str(body.get("text") or ""), targets)
+                reply_to = body.get("reply_to") if isinstance(body.get("reply_to"), str) else None
+                chat.post(room_id, str(body.get("text") or ""), targets, reply_to)
             elif action == "discuss":
                 chat.discuss(room_id, targets)
             elif action == "stop":

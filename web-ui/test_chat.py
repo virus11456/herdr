@@ -305,6 +305,50 @@ class LeaderTests(ChatTestCase):
         )
 
 
+class ReplyTests(ChatTestCase):
+    def test_reply_goes_to_the_quoted_ai_even_with_a_leader(self) -> None:
+        room = self.manager.create("demo", str(self.folder), ["claude", "codex", "grok"], False)
+        self.manager.post(room.id, "大家好", ["claude", "codex"])
+        self.wait_idle(room)
+        codex_reply = self.agent_messages(room, "codex")[0]
+        self.manager.update(room.id, {"leader": "grok"})
+        self.manager.post(room.id, "這點我不同意", [], reply_to=codex_reply["id"])
+        self.wait_idle(room)
+        user_message = room.data["messages"][3]
+        self.assertEqual(user_message["reply_to"]["from"], "codex")
+        self.assertEqual([m["from"] for m in room.data["messages"][4:]], ["codex"])
+        prompt = self.calls()[-1]["args"][-1]
+        self.assertIn("[使用者]（回覆你說的「ChatGPT 看到", prompt)
+        # Later, Claude sees whom the user was answering.
+        self.manager.post(room.id, "Claude 你覺得呢", [], reply_to=self.agent_messages(room, "claude")[0]["id"])
+        self.wait_idle(room)
+        claude_prompt = self.calls()[-1]["args"]
+        text = claude_prompt[claude_prompt.index("-p") + 1]
+        self.assertIn("[使用者]（回覆ChatGPT說的「", text)
+        self.assertIn("[使用者]（回覆你說的「Claude 看到", text)
+
+    def test_mentions_pick_the_recipients(self) -> None:
+        room = self.manager.create("demo", str(self.folder), ["claude", "codex", "grok"], False, leader="claude")
+        self.manager.post(room.id, "＠grok幫我查資料，@ChatGPT 也看一下", ["claude"])
+        self.wait_idle(room)
+        self.assertEqual([m["from"] for m in room.data["messages"][1:]], ["grok", "codex"])
+        self.assertEqual([m["role"] for m in room.data["messages"][1:]], ["reply", "reply"])
+
+    def test_parse_mentions(self) -> None:
+        members = ["claude", "codex", "grok"]
+        self.assertEqual(chat.parse_mentions("@Claude幫我 @gpt 和 @Grok", members), ["claude", "codex", "grok"])
+        self.assertEqual(chat.parse_mentions("寄信到 a@claudex.com", members), [])
+        self.assertEqual(chat.parse_mentions("@Grok @grok", ["claude"]), [])
+
+    def test_reply_to_unknown_message_is_rejected(self) -> None:
+        room = self.manager.create("demo", str(self.folder), ["claude"], False)
+        with self.assertRaises(chat.ChatError):
+            self.manager.post(room.id, "hi", [], reply_to="nope")
+        user = self.manager.post(room.id, "hi", [])
+        with self.assertRaises(chat.ChatError):
+            self.manager.post(room.id, "hi", [], reply_to=user["id"])
+
+
 class ParserTests(unittest.TestCase):
     def test_tool_descriptions(self) -> None:
         self.assertEqual(chat.describe_tool("Edit", {"file_path": "/a/b/index.html"}), "修改 index.html")

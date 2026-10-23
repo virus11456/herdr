@@ -621,3 +621,24 @@ button.chip.target.active { opacity: 1; border-color: var(--accent); color: var(
 .leader-select { display: flex; align-items: center; gap: 8px; font-size: 0.95em; }
 .leader-select select { width: auto; }
 .leader-hint { font-size: 0.9em; color: var(--muted); }
+.reply-bar { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border-left: 3px solid var(--accent); background: var(--surface-2); border-radius: 6px; font-size: 0.9em; }
+.reply-bar span { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mention-suggest { margin: 0; }
+.route-hint { color: var(--accent); }
+.reply-btn { min-height: 0; padding: 0 6px; font-size: 0.8em; font-weight: 400; background: transparent; border-color: transparent; color: var(--muted); }
+.reply-btn:hover { color: var(--accent); border-color: var(--border); }
+.msg.user .quote {
+  min-height: 0;
+  max-width: 100%;
+  padding: 4px 10px;
+  font-size: 0.85em;
+  text-align: left;
+  color: var(--muted);
+  background: var(--surface-2);
+  border: 0;
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
