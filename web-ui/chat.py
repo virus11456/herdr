@@ -30,17 +30,18 @@ AGENTS = {
     "claude": {"name": "Claude", "login": "claude"},
     "codex": {"name": "ChatGPT", "login": "codex login"},
     "grok": {"name": "Grok", "login": "grok login"},
+    "gemini": {"name": "Gemini", "login": "gemini"},
 }
 
 # Leader mode: one member plans, assigns work with "@Name: task" lines, reviews
 # the reports and either assigns again or sums up, at most LEADER_ROUNDS times.
 LEADER_ROUNDS = 3
 MAX_ASSIGNMENTS = 6
-NAME_TO_KIND = {"claude": "claude", "chatgpt": "codex", "codex": "codex", "gpt": "codex", "grok": "grok"}
+NAME_TO_KIND = {"claude": "claude", "chatgpt": "codex", "codex": "codex", "gpt": "codex", "grok": "grok", "gemini": "gemini"}
 ASSIGN_LINE = re.compile(r"^\s*(?:[-*•]\s*|\d+[.)]\s*)?[@＠]\s*([A-Za-z]+)\s*[:：]\s*(.+?)\s*$")
 
 # "@Claude", "@chatgpt", "＠grok" anywhere in a user's message, also right before Chinese text.
-MENTION = re.compile(r"[@＠](claude|chatgpt|codex|gpt|grok)(?![A-Za-z])", re.IGNORECASE)
+MENTION = re.compile(r"[@＠](claude|chatgpt|codex|gpt|grok|gemini)(?![A-Za-z])", re.IGNORECASE)
 
 MAX_CONTEXT_MESSAGES = 30
 MAX_CONTEXT_CHARS = 24000
@@ -49,7 +50,7 @@ MAX_ACTIVITY = 200
 TURN_TIMEOUT_SECONDS = 30 * 60
 LOGIN_HINTS = re.compile(
     r"not signed in|not logged in|please run /login|invalid api key|401 unauthorized|missing bearer|"
-    r"authentication|log in|login required",
+    r"authentication|auth method|log in|login required",
     re.IGNORECASE,
 )
 
@@ -91,6 +92,13 @@ def build_command(kind: str, exe: str, prompt: str, session: str | None, new_ses
         command += ["--permission-mode", "acceptEdits" if allow_edits else "default"]
         command += ["--resume", session] if session else ["--session-id", new_session]
         return command
+    if kind == "gemini":
+        # --skip-trust: the user picked this folder for the room, and an untrusted
+        # folder would silently reset the approval mode.
+        command = [exe, "-p", prompt, "-o", "stream-json", "--skip-trust"]
+        command += ["--approval-mode", "auto_edit" if allow_edits else "default"]
+        command += ["--resume", session] if session else ["--session-id", new_session]
+        return command
     if kind == "codex":
         sandbox = f'sandbox_mode="{"workspace-write" if allow_edits else "read-only"}"'
         if session:
@@ -117,19 +125,23 @@ def describe_tool(name: str, data: object) -> str:
     args = data if isinstance(data, dict) else {}
     lowered = name.lower()
     path = args.get("file_path") or args.get("path") or args.get("notebook_path") or args.get("target_file")
+    if lowered in ("read_many_files",):
+        return "讀取多個檔案"
+    if lowered in ("list_directory",):
+        return f"查看資料夾 {_name(path)}" if path else "查看資料夾"
     if lowered in ("read", "read_file", "view", "cat"):
         return f"讀取 {_name(path)}" if path else "讀取檔案"
     if lowered in ("write", "write_file", "create_file"):
         return f"建立 {_name(path)}" if path else "建立檔案"
-    if lowered in ("edit", "multiedit", "edit_file", "str_replace", "apply_patch", "notebookedit"):
+    if lowered in ("edit", "multiedit", "edit_file", "str_replace", "apply_patch", "notebookedit", "replace"):
         return f"修改 {_name(path)}" if path else "修改檔案"
-    if lowered in ("bash", "shell", "run_command", "exec", "terminal"):
+    if lowered in ("bash", "shell", "run_command", "run_shell_command", "exec", "terminal"):
         command = args.get("command") or args.get("cmd")
         return f"執行指令：{_short(command)}" if command else "執行指令"
-    if lowered in ("grep", "glob", "search", "find", "list_dir", "ls"):
+    if lowered in ("grep", "glob", "search", "find", "list_dir", "ls", "search_file_content"):
         pattern = args.get("pattern") or args.get("query") or path
         return f"搜尋：{_short(pattern)}" if pattern else "搜尋檔案"
-    if lowered in ("websearch", "web_search"):
+    if lowered in ("websearch", "web_search", "google_web_search"):
         return f"上網搜尋：{_short(args.get('query', ''))}"
     if lowered in ("webfetch", "web_fetch", "fetch"):
         return f"讀取網頁：{_short(args.get('url', ''))}"
@@ -148,6 +160,7 @@ class TurnParser:
         self.session: str | None = None
         self.error: str | None = None
         self.finished = False
+        self._gemini_break = False
 
     @property
     def text(self) -> str:
@@ -166,7 +179,39 @@ class TurnParser:
             return False
         if self.kind == "codex":
             return self._feed_codex(event)
+        if self.kind == "gemini":
+            return self._feed_gemini(event)
         return self._feed_messages(event)
+
+    def _feed_gemini(self, event: dict) -> bool:
+        kind = event.get("type")
+        if kind == "init":
+            self.session = event.get("session_id") or self.session
+            return False
+        if kind == "message" and event.get("role") == "assistant" and event.get("content"):
+            # Gemini streams the reply in pieces; join pieces of one reply,
+            # but start a new paragraph after a tool call.
+            if event.get("delta") and self.texts and not self._gemini_break:
+                self.texts[-1] += str(event["content"])
+            else:
+                self.texts.append(str(event["content"]))
+            self._gemini_break = False
+            return True
+        if kind == "tool_use":
+            self.activity.append(describe_tool(str(event.get("tool_name", "")), event.get("parameters")))
+            self._gemini_break = True
+            return True
+        if kind == "error":
+            if event.get("severity", "error") == "error":
+                self.error = str(event.get("message") or "error")
+                return True
+            return False
+        if kind == "result":
+            self.finished = True
+            if event.get("status") == "error" and not self.error:
+                self.error = str((event.get("error") or {}).get("message") or "Gemini 回報錯誤")
+            return True
+        return False
 
     def _feed_messages(self, event: dict) -> bool:
         kind = event.get("type")
@@ -718,8 +763,11 @@ class ChatManager:
             error = parser.error
             if timed_out.is_set():
                 error = f"超過 {TURN_TIMEOUT_SECONDS // 60} 分鐘沒有完成，已自動停止。可能是在等待某個權限確認。"
-            if not error and process.returncode not in (0, None) and not parser.text:
-                error = "".join(stderr_tail).strip()[-600:] or f"結束代碼 {process.returncode}"
+            if not error and not parser.text and not stopped:
+                # Exited without a reply (for example a login problem printed to stderr).
+                error = "".join(stderr_tail).strip()[-600:] or (
+                    f"結束代碼 {process.returncode}" if process.returncode else "沒有收到回覆"
+                )
             if stopped and not parser.text:
                 message["status"] = "cancelled"
             elif error and (not parser.text or timed_out.is_set()):

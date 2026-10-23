@@ -41,7 +41,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - depends on interpreter
     tomllib = None
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 log = logging.getLogger("herdr-web")
 
@@ -84,7 +84,7 @@ ALLOWED_METHODS = frozenset(
     }
 )
 
-DEFAULT_PREFERRED_AGENTS = "claude,codex,grok"
+DEFAULT_PREFERRED_AGENTS = "claude,codex,grok,gemini"
 
 FALLBACK_AGENT_KINDS = [
     "claude", "codex", "gemini", "opencode", "cursor", "copilot", "amp",
@@ -95,10 +95,13 @@ FALLBACK_AGENT_KINDS = [
 # installer, run visibly in a new pane. Codex has no standalone installer, so
 # install_codex.py unpacks OpenAI's native npm platform package without Node.js.
 CODEX_INSTALLER = Path(__file__).resolve().parent / "install_codex.py"
+# Gemini CLI needs Node.js; install_gemini.py brings a private copy when there is none.
+GEMINI_INSTALLER = Path(__file__).resolve().parent / "install_gemini.py"
 AGENT_INSTALLERS = {
     "claude": "curl -fsSL https://claude.ai/install.sh | bash",
     "codex": f"{shlex.quote(sys.executable)} {shlex.quote(str(CODEX_INSTALLER))}",
     "grok": "curl -fsSL https://x.ai/cli/install.sh | bash",
+    "gemini": f"{shlex.quote(sys.executable)} {shlex.quote(str(GEMINI_INSTALLER))}",
 }
 AGENT_DETECT_TTL_SECONDS = 60
 MAX_DIR_ENTRIES = 500

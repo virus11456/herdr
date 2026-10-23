@@ -30,6 +30,20 @@ FAKE_AGENT = textwrap.dedent(
     mode = os.environ.get("FAKE_AGENT_MODE", "ok")
     def out(obj):
         print(json.dumps(obj), flush=True)
+    if kind == "gemini":
+        if mode == "login":
+            sys.stderr.write("Please set an Auth method in your settings.json\n")
+            sys.exit(0)
+        session = args[args.index("--resume") + 1] if "--resume" in args else args[args.index("--session-id") + 1]
+        out({"type": "init", "session_id": session, "model": "gemini"})
+        out({"type": "message", "role": "user", "content": "x"})
+        out({"type": "message", "role": "assistant", "content": "Gemini ", "delta": True})
+        out({"type": "message", "role": "assistant", "content": "先看一下", "delta": True})
+        out({"type": "tool_use", "tool_name": "read_file", "parameters": {"file_path": "/a/notes.md"}})
+        out({"type": "tool_result", "status": "success", "output": "..."})
+        out({"type": "message", "role": "assistant", "content": "看完了", "delta": True})
+        out({"type": "result", "status": "success"})
+        sys.exit(0)
     if kind == "codex":
         prompt = args[-1]
         thread = args[args.index("resume") + 4] if "resume" in args else str(uuid.uuid4())
@@ -75,7 +89,7 @@ class ChatTestCase(unittest.TestCase):
         root = Path(self.tmp.name)
         self.bin = root / "bin"
         self.bin.mkdir()
-        for kind in ("claude", "codex", "grok"):
+        for kind in ("claude", "codex", "grok", "gemini"):
             path = self.bin / kind
             path.write_text(FAKE_AGENT)
             path.chmod(0o755)
@@ -303,6 +317,33 @@ class LeaderTests(ChatTestCase):
             chat.parse_assignments(text, ["claude", "codex", "grok"], "claude"),
             [("codex", "寫測試"), ("grok", "查資料"), ("codex", "改 CSS")],
         )
+
+
+class GeminiTests(ChatTestCase):
+    def test_gemini_stream_is_joined_and_resumed(self) -> None:
+        room = self.manager.create("demo", str(self.folder), ["gemini", "claude"], True)
+        self.manager.post(room.id, "@Gemini 你好", [])
+        self.wait_idle(room)
+        reply = self.agent_messages(room, "gemini")[0]
+        self.assertEqual(reply["status"], "done", reply)
+        self.assertEqual(reply["text"], "Gemini 先看一下\n\n看完了")
+        self.assertEqual(reply["activity"], ["讀取 notes.md"])
+        first = self.calls()[0]["args"]
+        self.assertIn("--skip-trust", first)
+        self.assertEqual(first[first.index("--approval-mode") + 1], "auto_edit")
+        session = first[first.index("--session-id") + 1]
+        self.manager.post(room.id, "@gemini 再一次", [])
+        self.wait_idle(room)
+        second = self.calls()[1]["args"]
+        self.assertEqual(second[second.index("--resume") + 1], session)
+
+    def test_gemini_without_login_shows_login_error(self) -> None:
+        os.environ["FAKE_AGENT_MODE"] = "login"
+        room = self.manager.create("demo", str(self.folder), ["gemini"], False)
+        self.manager.post(room.id, "hi", ["gemini"])
+        self.wait_idle(room)
+        reply = self.agent_messages(room, "gemini")[0]
+        self.assertEqual((reply["status"], reply["error_kind"]), ("error", "login"), reply)
 
 
 class ReplyTests(ChatTestCase):

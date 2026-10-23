@@ -5,8 +5,8 @@
    confirmAction, AI_TOOLS, state, openPane, offerInstall, toolStatus). */
 
 const TARGETS_KEY = "herdr-web:targets:";
-const MENTION_NAMES = { claude: "claude", chatgpt: "codex", codex: "codex", gpt: "codex", grok: "grok" };
-const MENTION_PATTERN = /[@＠](claude|chatgpt|codex|gpt|grok)(?![A-Za-z])/gi;
+const MENTION_NAMES = { claude: "claude", chatgpt: "codex", codex: "codex", gpt: "codex", grok: "grok", gemini: "gemini" };
+const MENTION_PATTERN = /[@＠](claude|chatgpt|codex|gpt|grok|gemini)(?![A-Za-z])/gi;
 
 const chat = {
   rooms: [],
@@ -148,7 +148,7 @@ function renderRichText(text) {
     }
     for (const line of part.split("\n")) {
       const heading = line.match(/^#{1,4}\s+(.*)$/);
-      if (/^\s*(?:[-*•]\s*|\d+[.)]\s*)?\**[@＠]\s*(claude|chatgpt|codex|gpt|grok)\s*\**\s*[:：]/i.test(line)) {
+      if (/^\s*(?:[-*•]\s*|\d+[.)]\s*)?\**[@＠]\s*(claude|chatgpt|codex|gpt|grok|gemini)\s*\**\s*[:：]/i.test(line)) {
         const row = h("p", { class: "rich-assign" });
         appendInline(row, line.trim());
         root.append(row);

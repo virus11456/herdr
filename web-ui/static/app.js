@@ -16,6 +16,7 @@ const AI_TOOLS = {
   claude: { kind: "claude", name: "Claude", product: "Claude Code", account: "Claude 帳號", command: "claude", logo: "C", tone: "claude" },
   codex: { kind: "codex", name: "ChatGPT", product: "Codex", account: "ChatGPT 帳號", command: "codex", logo: "G", tone: "chatgpt" },
   grok: { kind: "grok", name: "Grok", product: "Grok Build", account: "Grok 帳號", command: "grok", logo: "X", tone: "grok" },
+  gemini: { kind: "gemini", name: "Gemini", product: "Gemini CLI", account: "Google 帳號", command: "gemini", logo: "✦", tone: "gemini" },
 };
 
 /* Names for the agent picker in the advanced view. */
@@ -23,7 +24,7 @@ const AGENT_LABELS = {
   claude: "Claude（Claude Code）",
   codex: "ChatGPT（Codex）",
   grok: "Grok（Grok Build）",
-  gemini: "Gemini CLI",
+  gemini: "Gemini（Gemini CLI）",
   copilot: "GitHub Copilot CLI",
   cursor: "Cursor Agent CLI",
   opencode: "OpenCode",
