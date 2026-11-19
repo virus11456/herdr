@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { context, register, handleFailure, takeover, hooksSettings, report, drain, request, executeRequest, drainRequests } from './team-runtime.mjs';
+import { context, register, handleFailure, takeover, hooksSettings, report, drain, request, executeRequest, drainRequests, captureReply, routeMessage, switchModel, selectedModel, enqueueChat, drainChats, drainProject } from './team-runtime.mjs';
 
 function fixture(t, state = 'idle') {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'herdr-team-test-'));
@@ -140,4 +140,112 @@ test('worker reports to the former leader follow a completed handover', t => {
   assert.equal(drain(c).delivered, 1);
   assert.deepEqual(calls[0][1].slice(0,2), ['send','t20']);
   assert.match(calls[0][1][2], /forwarded from t10/);
+});
+test('Claude final reply is copied exactly without input or hidden fields', t => {
+  const {c,cwd}=fixture(t);
+  const text='這是繁體中文回覆。';
+  assert.equal(captureReply({hook_event_name:'Stop',last_assistant_message:text,input:'private-input',thinking:'hidden'},c,'Claude').captured,true);
+  const all=fs.readFileSync(path.join(cwd,'.herdr-team/messages.jsonl'),'utf8');
+  const last=JSON.parse(all.trim().split('\n').at(-1));
+  assert.equal(last.text,text);assert.equal(last.kind,'reply');
+  assert.ok(!all.includes('private-input'));assert.ok(!all.includes('hidden'));
+});
+test('Codex notify captures completed replies and rejects unrelated events or old leaders', t => {
+  const {c}=fixture(t);
+  assert.equal(captureReply({type:'agent-turn-complete','last-assistant-message':'已完成'},c,'Codex').captured,true);
+  assert.equal(captureReply({type:'other','last-assistant-message':'x'},c,'Codex').captured,false);
+  assert.equal(captureReply({hook_event_name:'Stop',last_assistant_message:'x'},{...c,terminal:'t99'},'Claude').captured,false);
+});
+test('mentions route only an explicit leading agent name and preserve the task', () => {
+  assert.equal(routeMessage('請找 @codex 的紀錄').target,'team');
+  assert.equal(routeMessage('@codextra test').target,'team');
+  assert.equal(routeMessage('@Codex：修好中文輸入').target,'codex');
+  assert.match(routeMessage('@minimax 測試此檔案').text,/herdr-minimax-cn/);
+  assert.match(routeMessage('@claude 說明問題').text,/說明問題$/);
+  assert.throws(()=>routeMessage('@codex'),/輸入/);
+});
+test('model switch only confirms the exact requested model dialog and waits for success', async t => {
+  const {c,cwd,calls}=fixture(t);
+  const run=c.run;let reads=0;
+  c.run=(cmd,args)=>{
+    if(args[0]==='read') return {text:++reads===1?'/model claude-opus-5-5\nSwitch model?\n❯ 1. Yes, switch to Opus 5.5\n  2. No, go back':'/model claude-opus-5-5\nSet model to Opus 5.5 and saved as your default for new sessions'};
+    return run(cmd,args);
+  };
+  assert.equal((await switchModel(c,'claude-opus-5-5',async()=>{})).applied,true);
+  assert.equal(calls.filter(([,a])=>a[0]==='keys').length,1);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(cwd,'.herdr-team/model.json'))).terminal,'t10');
+});
+test('model selection does not interrupt work or answer permission prompts', async t => {
+  for(const state of ['working','blocked']) {
+    const {c,calls,cwd}=fixture(t,state);
+    await assert.rejects(switchModel(c,'claude-fable-5-2',async()=>{}),/處理|確認/);
+    assert.ok(!calls.some(([,a])=>['send','keys'].includes(a[0])));
+    assert.equal(fs.existsSync(path.join(cwd,'.herdr-team/model.json')),false);
+  }
+});
+test('old successful switches and unrelated dialogs cannot be reported as a new success', async t => {
+  const {c,calls,cwd}=fixture(t), run=c.run;
+  c.run=(cmd,args)=>args[0]==='read'?{text:'/model claude-fable-5-2\nSet model to Fable 5.2\n/model claude-fable-5-2\nAllow reading?\n❯ 1. Yes\n2. No'}:run(cmd,args);
+  await assert.rejects(switchModel(c,'claude-fable-5-2',async()=>{}),/尚未收到/);
+  assert.ok(!calls.some(([,a])=>a[0]==='keys'));
+  assert.equal(fs.existsSync(path.join(cwd,'.herdr-team/model.json')),false);
+});
+test('future Claude preference survives backup mode and rejects arbitrary model input', async t => {
+  const {c,cwd,calls}=fixture(t);
+  fs.writeFileSync(path.join(cwd,'.herdr-team/control.json'),JSON.stringify({terminal:'t20',role:'codex'}));
+  assert.equal((await switchModel(c,'claude-fable-5-2')).applied,false);
+  assert.equal(selectedModel(c),'claude-fable-5-2');
+  assert.equal(calls.length,0);
+  await assert.rejects(switchModel(c,'invalid\n/permission'),/只能/);
+});
+test('consecutive messages save immediately while working and later deliver in order', t=>{
+  const {c,cwd,calls}=fixture(t,'working');
+  enqueueChat(c,'第一則');enqueueChat(c,'第二則');
+  assert.equal(drainChats(c).pending,2);assert.ok(!calls.some(([,a])=>a[0]==='send'));
+  const run=c.run;c.run=(cmd,a)=>a[0]==='get'?{state:'live',status:{app:'claude-code',state:'done'}}:run(cmd,a);
+  assert.equal(drainChats(c).sent,1);assert.equal(calls.find(([,a])=>a[0]==='send')[1][2],'第一則');
+  assert.equal(drainChats(c).sent,0);
+  fs.unlinkSync(path.join(cwd,'.herdr-team/chat-delivery.json'));
+  assert.equal(drainChats(c).sent,1);assert.equal(calls.filter(([,a])=>a[0]==='send').at(-1)[1][2],'第二則');
+});
+test('queued messages never answer a permission dialog or disappear on send failure',t=>{
+  const {c,calls}=fixture(t,'blocked');enqueueChat(c,'等確認後處理');
+  assert.equal(drainChats(c).reason,'blocked');assert.ok(!calls.some(([,a])=>a.includes('--force')||a[0]==='send'));
+  c.run=(cmd,a)=>{if(a[0]==='get')return{state:'live',status:{app:'claude-code',state:'idle'}};throw Error('permission race');};
+  assert.equal(drainChats(c).reason,'delivery_paused');assert.equal(drainChats(c).pending,1);
+});
+test('new conversations isolate messages, models, ownership and replies',t=>{
+  const {c,cwd}=fixture(t), first=context(cwd,'t21',c.run,'chat-one'), second=context(cwd,'t22',c.run,'chat-two');
+  register(first,'claude');register(second,'claude');
+  enqueueChat(first,'只在第一個對話');captureReply({hook_event_name:'Stop',last_assistant_message:'第一個答案'},first,'Claude');
+  fs.writeFileSync(path.join(first.teamDir,'model.json'),JSON.stringify({model:'claude-fable-5-2'}));
+  assert.equal(selectedModel(first),'claude-fable-5-2');assert.equal(selectedModel(second),'claude-opus-5-5');
+  assert.equal(fs.existsSync(path.join(second.teamDir,'messages.jsonl')),true); // registration only
+  assert.ok(!fs.readFileSync(path.join(second.teamDir,'messages.jsonl'),'utf8').includes('第一個'));
+  assert.throws(()=>context(cwd,'t1',c.run,'../escape'),/Invalid conversation/);
+});
+test('named conversation dispatch and backup keep their report and hook scope',t=>{
+  const {c,cwd,calls}=fixture(t,'error'),chat=context(cwd,'t25',c.run,'scoped-chat');register(chat,'claude');
+  executeRequest(chat,{sender:'t25',action:'run',args:{template:'herdr-minimax-cn',name:'check',task:'Review only'}});
+  assert.match(calls.find(([,a])=>a[0]==='run')[1].at(-1),/--chat scoped-chat report t25/);
+  assert.equal(handleFailure({hook_event_name:'StopFailure',error:'rate_limit'},chat).switched,true);
+  const args=JSON.parse(calls.find(([cmd])=>cmd==='herdr-app')[1][2]).argv;
+  assert.deepEqual(args.slice(1,3),['--team-chat','scoped-chat']);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(cwd,'.herdr-team/control.json'))).terminal,'t10');
+});
+test('busy conversations prevent another chat from editing the same project',t=>{
+  const {c,cwd,calls}=fixture(t,'working'), chat=context(cwd,'t21',c.run,'another');
+  register(chat,'claude');enqueueChat(chat,'新的工作');
+  assert.equal(drainChats(chat).reason,'another_conversation_busy');
+  assert.ok(!calls.some(([,a])=>a[0]==='send'));
+});
+test('a new chat starts one coordinator and preserves the queued first message',t=>{
+  const {c,cwd}=fixture(t);let starts=0;
+  const chat=context(cwd,null,(cmd,a)=>cmd==='hc'?{state:'live',status:null}:(starts++,{terminal:'t30'}),'new-chat');
+  enqueueChat(chat,'第一則獨立對話');
+  // Remove the unrelated fixture owner so this conversation may start.
+  fs.unlinkSync(path.join(cwd,'.herdr-team/control.json'));
+  assert.equal(drainChats(chat).reason,'starting');
+  const control=JSON.parse(fs.readFileSync(path.join(chat.teamDir,'control.json')));
+  assert.equal(control.terminal,'t30');assert.equal(drainChats(chat).pending,1);assert.equal(starts,1);
 });

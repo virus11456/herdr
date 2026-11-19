@@ -2,6 +2,32 @@
 
 交給另一台電腦上的 agent 使用。這是安裝與設定流程，不是已部署到另一台電腦的證明。
 
+## 快速部署到另一台 Mac
+
+支援 Apple Silicon Mac。從 [GitHub 部署分支](https://github.com/virus11456/herdr/tree/codex/desktop-team-panel/desktop-team-panel) 下載部署包，雙擊 **`快速部署.command`**；或把下列指令交給另一個 agent：
+
+```sh
+herdr_setup_dir="$(mktemp -d)"
+curl -fsSL 'https://raw.githubusercontent.com/virus11456/herdr/codex/desktop-team-panel/desktop-team-panel/deploy.sh' -o "$herdr_setup_dir/deploy.sh"
+# 先讀取腳本；下載的是本儲存庫的部署包，工具安裝器只使用官方網址。
+bash "$herdr_setup_dir/deploy.sh" '/absolute/path/to/project'
+```
+
+`deploy.sh` 會把版本保存在 `~/Documents/Herdr Team Panel/releases/`，再執行快速部署。可用 `HERDR_DEPLOY_DIR` 指定保存位置。腳本只安裝缺少的 Herdr、Claude、Codex、MiniMax CLI，先跑部署包測試，再備份與套用設定、載入聊天介面；已有工具與帳號會沿用。省略專案路徑時，可在面板按專案按鈕選擇。
+
+**首次登入與資料夾信任需要在新機完成一次。** 由目標 agent 執行第 4 節的官方登入指令，MiniMax 使用 `--region cn`；登入資料、API Key、token 與來源機器的 `.herdr-team/control.json` 不隨部署包搬移。部署腳本完成代表設定已安裝，仍須驗證三個帳號能實際回答。
+
+面板可直接使用：
+
+- **左側「＋新增專案」**：選擇資料夾，專案會保留在側欄；點選其下對話可以返回。
+- **左側「＋新對話」**：在目前專案建立獨立對話，保留舊對話與草稿，不混用模型上下文。
+- **連續傳訊息**：Enter 送出、Shift Enter 換行，也可按「送出」。訊息先保存，再依序傳給總控；等待上一則回答或權限確認時，仍可繼續排隊，標示「等待處理／已送出」。
+- **未加 @**：預設協作模式；開發任務由總控安排 Codex 實作、MiniMax CN 驗證，簡單問答直接回覆。
+- **`@claude`、`@codex`、`@minimax`**：指定單一代理，總控派給指定者並整合真實回報，不冒充另一個模型回答。
+- **Opus 5.5／Fable 5.2**：點選切換 Claude 模型；預設 Opus 5.5。忙碌或等待權限時不切換。CLI 可能要求確認；程式只確認符合此次按鈕操作的模型切換提示，其他權限與付費提示由使用者決定。`/model` 也會保存為 Claude CLI 新工作階段的預設。
+- **目前調用與執行摘要**：顯示實際處理中的代理、派工與回報。顯示公開工作摘要，不記錄模型的私密內部推理。
+- **查看確認**：總控或 worker 等待權限時顯示提示；發送失敗保留文字，避免以為訊息送出卻沒有反應。
+
 ## 交給目標 agent 的指令
 
 > 請閱讀整份文件，先檢查這台電腦，再完成符合本機平台的部署。保留既有帳號、模型、設定與專案；只有需要時才安裝缺少的 CLI。先完成可獨立完成的工作，登入與工具自身的權限確認再交給使用者。不要要求使用者在聊天中貼 API Key、登入 token 或驗證碼。每一步以實際輸出驗證，不能只因下過命令就宣告成功。
@@ -149,7 +175,7 @@ bash './啟動 Herdr 協作.command' '/absolute/path/to/project'
 
 ## 6. 總控與工作代理如何協作
 
-先讀這台電腦上的 Herdr 文件與 `hc --skill`，以本機版本為準。不要把舊版 Herdr TUI 的命令混入桌面 App。
+部署 agent 先依本機 Herdr 文件與 `hc --skill` 核對命令；一般聊天總控不必為每次對話讀取工作區外的設定。不要把舊版 Herdr TUI 的命令混入桌面 App。
 
 總控用互動式 CLI 派工，讓使用者可以看見、介入與延續；不要以多個分頁的存在當成代理已合作的證據。
 
@@ -181,11 +207,16 @@ hc wait implement
 .herdr-team/messages.jsonl 真實派工與回報紀錄
 .herdr-team/control.json   目前總控與切換階段
 .herdr-team/outbox/        沙箱內的待轉送回報
+.herdr-team/conversations/<id>/  新對話各自的 control、STATUS、messages、佇列與模型偏好
 ```
 
 總控在派工前後與收到結果後更新紀錄。**備援總控先讀交接檔並檢查仍在跑的工作代理，不能重複派工。** 切換後只允許一位總控接收新任務；停止主總控的當前回合，再讓 Codex 接手。
 
-`install-panel.pl` 會安裝 Claude 的單次啟動設定，在主總控啟動器中加入官方 `StopFailure` hook，不改動使用者的全域 Claude 設定。根據結構化的額度、服務、認證等錯誤，自動開啟 Codex 備援分頁；面板也有手動切換按鈕。
+原有對話使用 `.herdr-team/`，新對話使用其下獨立的 `conversations/<id>/`。本機側欄專案、對話清單和草稿保存在 Herdr 的 shared state。每個新對話有自己的 CLI 會話；同專案的其他對話正在工作或等待確認時，新的使用者訊息會先排隊，以避免兩個總控同時改同一份檔案。不同專案可各自處理。切換對話不會終止正在執行的任務，面板會繼續轉送各專案的回報。
+
+具名對話的 worker 回報命令必須保留 `--chat <id>`，例如 `herdr-team-runtime --chat <id> report <總控ID> MiniMax '摘要'`。派工時附完整命令，避免 worker 另外查找工具位置。待送訊息在專案內落盤，重開 App 可繼續處理；強制終止在傳送和標記之間仍可能重複投遞，不宣稱故障期間 exactly-once。
+
+`install-panel.pl` 會安裝 Claude 的單次啟動設定，在主總控啟動器中加入官方 `Stop` 回覆擷取與 `StopFailure` 備援 hook，不改動使用者的全域 hooks。根據結構化的額度、服務、認證等錯誤，自動開啟 Codex 備援分頁；面板也有手動切換按鈕。
 
 不把正常完成、使用者取消、輸出長度限制、未知錯誤或權限確認當成同一件事。Claude 必須從新的 `herdr-team-lead` 入口啟動才能載入 hook；之前已開啟的普通 Claude 分頁不會自動變成有 hook 的總控。
 
@@ -206,7 +237,7 @@ herdr-team-runtime request list '{}'
 herdr-team-runtime response <上一個指令回傳的id>
 ```
 
-可用動作為 templates、list、run、get、read、wait、send、interrupt。只有 `control.json` 指定的現任總控能提出請求；只允許既有團隊終端、已知的兩種 worker 範本及專案內 cwd。`queued` 只是已排入，必須檢查 response 的 `ok` 與實際結果。逾時先查同一個 id，不能盲目再啟動一個 worker。位於專案外的 worktree 不在預設授權範圍，需另行設計明確 allowlist，不要拿移除沙箱替代。
+可用動作為 templates、list、run、get、read、wait、send、interrupt。只有 `control.json` 指定的現任總控能提出請求；只允許既有團隊終端、三種受管理的 worker 範本及專案內 cwd。`queued` 只是已排入，必須檢查 response 的 `ok` 與實際結果。逾時先查同一個 id，不能盲目再啟動一個 worker。位於專案外的 worktree 不在預設授權範圍，需另行設計明確 allowlist，不要拿移除沙箱替代。
 
 備援的實作與驗收規則：
 
@@ -227,12 +258,12 @@ herdr-team-runtime response <上一個指令回傳的id>
 perl ./install-panel.pl '/absolute/path/to/project'
 ```
 
-此腳本會安裝設定與面板，先跑 Herdr check，再複製原廠 `main` 為自訂的 `team-work` 版面，加入右側面板。被修改的檔案會備份；若已有同名個人版面或模組，先核對再執行。
+此腳本會安裝設定與面板，先跑 Herdr check，再複製原廠 `main` 為自訂的 `team-work` 版面，載入完整聊天畫面。被修改的檔案會備份；若已有同名個人版面或模組，先核對再執行。
 
 - 任務輸入框，有可見標籤與送出中狀態。
 - 顯示目前專案路徑、主總控 Claude、備援 Codex、Codex 實作、MiniMax CN 測試審查。
 - 把使用者任務送給當前總控，顯示實際派工、代理回報、錯誤與等待使用者的狀態。
-- 提供「開啟總控」與「切換至 Codex 備援總控」；切換不得產生兩位同時派工的總控。
+- 提供「查看詳細過程」與「Codex 接手」；切換不得產生兩位同時派工的總控。
 - 顯示回報來源、時間及相關終端／產物；不能生成假的對話或用動畫冒充進度。
 - 沒有任務或尚未連線時顯示明確空白狀態；發送失敗要顯示原因並保留輸入。
 
@@ -244,7 +275,7 @@ perl ./install-panel.pl '/absolute/path/to/project'
 ~/.config/herdr-app/layouts/<自訂名稱>.json
 ```
 
-Herdr 使用原生 GPUI 模組，**不是 HTML/CSS 或瀏覽器網頁**。讀本機 `AGENTS.md`、`herdr.d.ts` 與 `gpui-kit.d.ts`；使用 `InputState` / `Input`、`exec`、`hc`、`run` 等本機版本提供的 API。參考原廠 `mods/prompt` 的輸入框寫法。
+Herdr 使用原生 GPUI 模組，**不是 HTML/CSS 或瀏覽器網頁**。部署或修改介面的 agent 讀本機 `AGENTS.md`、`herdr.d.ts` 與 `gpui-kit.d.ts`；使用 `TextareaState` / `Textarea`、`exec`、`hc`、`run` 等本機版本提供的 API。參考原廠 `mods/prompt` 的輸入框寫法。
 
 不得直接修改原廠 `main` layout 或 shipped mods：先 `layout.clone`，需要修改原廠 mod 才另外 `mod.clone`。不要改寫 App 每次啟動會重建的文件。`exec`、檔案寫入等副作用在 `checking()` 時必須略過。
 

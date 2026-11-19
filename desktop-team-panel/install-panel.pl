@@ -38,17 +38,17 @@ sub find_node {
     for my $child (@{$node->{children} || []}) { my $got = find_node($child, $id); return $got if $got; }
     return;
 }
-if (!find_node($layout, 'team-chat-panel')) {
-    my $body = find_node($layout, 'work-body') or die "This Herdr version has a different layout; adapt before applying\n";
-    push @{$body->{children}}, { id => 'team-chat-panel', type => 'block', size => {px => 440}, min => 340, max => 800, content => {mod => 'team-chat'}, radius => 10, border => {width => 1, color => 'border'} };
-}
+$layout->{type} = 'column';
+$layout->{children} = [
+    {id => 'chat-titlebar', type => 'block', size => {px => 46}, window_drag => JSON::PP::true, content => {mod => 'workspace-chrome'}},
+    {id => 'chat-surface', type => 'block', size => {weight => 1}, content => {mod => 'team-chat'}},
+];
 save($layout_file, JSON::PP->new->utf8->pretty->canonical->encode($layout));
 if ($folder) {
-    my $initial = {folder => abs_path($folder)};
+    my $initial = {folder => abs_path($folder), requestId => "$stamp-$$"};
     $initial->{terminal} = $terminal if $terminal;
     $initial->{space} = $space if $space;
     save("$app/team-chat.json", JSON::PP->new->utf8->pretty->encode($initial));
 }
 system($cli, 'do', 'layout.switch', '{"name":"team-work"}') == 0 or die "Cannot show layout\n";
-system($cli, 'do', 'layout.hide', '{"id":"panel"}');
-print "Panel installed in the custom team-work layout.\n";
+print "Chat view installed in the custom team-work layout.\n";

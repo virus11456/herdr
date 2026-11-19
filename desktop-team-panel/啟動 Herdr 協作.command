@@ -9,12 +9,21 @@ if [[ ! -d "$herdr_team_folder" ]]; then
   printf '找不到專案資料夾：%s\n' "$herdr_team_folder" >&2
   exit 1
 fi
-/usr/bin/open -a Herdr
+/usr/bin/open /Applications/Herdr.app
 export HERDR_TEAM_FOLDER="$herdr_team_folder"
-herdr_team_json=$(/usr/bin/perl -MJSON::PP -e 'print encode_json({name=>"AI Team", tab=>"Claude - Team Lead", folder=>$ENV{HERDR_TEAM_FOLDER}, argv=>["$ENV{HOME}/.local/bin/herdr-team-lead"]})')
+herdr_team_bundle="$(cd "$(dirname "$0")" && pwd)"
 for attempt in {1..10}; do
   if "$HOME/.local/bin/herdr-app" status >/dev/null 2>&1; then
-    exec "$HOME/.local/bin/herdr-app" do space.new "$herdr_team_json"
+    if [[ -f "$herdr_team_bundle/install-panel.pl" ]]; then
+      exec /usr/bin/perl "$herdr_team_bundle/install-panel.pl" "$herdr_team_folder"
+    fi
+    /usr/bin/perl -MJSON::PP -e '
+      my $file="$ENV{HOME}/.config/herdr-app/team-chat.json";
+      open my $out, ">", "$file.tmp-$$" or die $!;
+      print {$out} encode_json({folder=>$ENV{HERDR_TEAM_FOLDER}, requestId=>time."-$$"});
+      close $out or die $!; rename("$file.tmp-$$",$file) or die $!;
+    '
+    exec "$HOME/.local/bin/herdr-app" do layout.switch '{"name":"team-work"}'
   fi
   sleep 1
 done
