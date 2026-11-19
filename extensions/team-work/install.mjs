@@ -45,6 +45,7 @@ try {
   const files = [
     ['mods/team-chat/main.js', path.join(app, 'mods/team-chat/main.js')],
     ['mods/team-chat/mod.json', path.join(app, 'mods/team-chat/mod.json')],
+    ...['activity','arrow-up','book','chat','check','close','code','compass','edit','folder','plus','search','sidebar','spark','terminal'].map(name => [`mods/team-chat/icons/${name}.svg`, path.join(app, `mods/team-chat/icons/${name}.svg`)]),
     ['layouts/team-work.json', path.join(app, 'layouts/team-work.json')],
     ['team-runtime.mjs', path.join(app, 'team-runtime.mjs')],
     ...['lead', 'backup', 'claude', 'runtime'].map(name => [`bin/herdr-team-${name}`, path.join(bin, `herdr-team-${name}`)]),

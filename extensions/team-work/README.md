@@ -2,6 +2,8 @@
 
 這是 Herdr 桌面版的自訂 `team-work` 版面與 `team-chat` 面板，搭配 Claude 主總控、Codex 實作與備援、MiniMax CN 獨立驗證。保留專案／對話側欄、訊息佇列、協作紀錄、模型選擇、權限提示與 Codex 接手功能。
 
+新版以 ChatGPT 的對話資訊層次為參考：可收合與搜尋的側欄、集中閱讀的訊息區、輕量模型切換、四個起手建議，以及整合代理選擇的圓角輸入框。配色使用 Herdr 主題，附 15 個一致筆畫的 SVG 圖示；所有建議只填入草稿，需使用者送出才會執行。
+
 此目錄是介面擴充安裝包。需要已安裝提供 gpui-kit mod API 的 **Herdr 桌面版（herdr-app）與 herdr-core（hc）**；不能僅以此倉庫原有的舊版 `herdr` TUI 取代。來源快照日期：2026-11-19。
 
 ## 在另一台 Mac 安裝
@@ -33,7 +35,7 @@ Linux 也可執行安裝器，但本快照未於 Linux 實機驗證。Windows �
 
 安裝器會新增／更新下列自訂檔案，既有同名檔案先備份到 `~/.config/herdr-app/team-work-backups/<時間與識別碼>/`，附 `manifest.json`：
 
-- `~/.config/herdr-app/mods/team-chat/{main.js,mod.json}`
+- `~/.config/herdr-app/mods/team-chat/{main.js,mod.json,icons/}`
 - `~/.config/herdr-app/layouts/team-work.json`
 - `~/.config/herdr-app/team-runtime.mjs` 與本機產生的 `team-claude-settings.json`
 - `~/.local/bin/herdr-team-{lead,backup,claude,runtime}`
