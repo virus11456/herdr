@@ -1,0 +1,4 @@
+.herdr-team/
+node_modules/
+*.backup-*
+*.tmp
