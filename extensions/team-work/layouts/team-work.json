@@ -1,0 +1,45 @@
+{
+   "background" : "canvas",
+   "children" : [
+      {
+         "content" : {
+            "mod" : "workspace-chrome"
+         },
+         "id" : "chat-titlebar",
+         "size" : {
+            "px" : 46
+         },
+         "type" : "block",
+         "window_drag" : true
+      },
+      {
+         "content" : {
+            "mod" : "team-chat"
+         },
+         "id" : "chat-surface",
+         "size" : {
+            "weight" : 1
+         },
+         "type" : "block"
+      }
+   ],
+   "cloned_from" : {
+      "name" : "main",
+      "version" : "0.1.16"
+   },
+   "divider" : {
+      "color" : "border",
+      "width" : 1
+   },
+   "id" : "root",
+   "terminal_padding" : [
+      14,
+      12
+   ],
+   "titlebar" : "none",
+   "traffic_lights" : [
+      12,
+      16
+   ],
+   "type" : "column"
+}

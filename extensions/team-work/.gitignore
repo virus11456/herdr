@@ -1,0 +1,13 @@
+.env
+.env.*
+*.pem
+*.key
+*.backup-*
+*.log
+.herdr-team/
+.review-tmp/
+team-chat.json
+team-updates.json
+team-claude-settings.json
+team-work-backups/
+node_modules/

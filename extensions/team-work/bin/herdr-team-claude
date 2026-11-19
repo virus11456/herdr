@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+export PATH="$HOME/.local/bin:$PATH"
+exec "$HOME/.local/bin/claude" --model "$("$HOME/.local/bin/herdr-team-runtime" model-id)" "$@"
